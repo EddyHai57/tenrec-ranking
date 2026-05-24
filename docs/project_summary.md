@@ -22,8 +22,12 @@
 - `ctr_data_1M.csv` 中发现完全重复行 883,646 条、重复 `(user_id,item_id)` 1,810,484 条，其中 click 冲突 560,994 条；因此 `(user_id,item_id)` 不能作为唯一样本键。
 - 已生成 `ctr_tiny_100k_head.csv`：100,000 行，773 个 user，`click=0`: 71,756，`click=1`: 28,244。
 - 已生成 `ctr_user_block_1m_seed20260525.csv`：1,000,200 行，8,181 个完整 user blocks，`click=0`: 758,425，`click=1`: 241,775。
+- `ctr_user_block_1m_seed20260525.csv` 已完成 split feasibility check：按 user 内文件顺序 80/10/10 切分后，train / valid / test 分别为 807,282 / 96,459 / 96,459 行。
+- valid / test 的有效 GAUC row coverage rate 分别为 0.87316891 和 0.82024487，smoke 阶段可用于 GAUC implementation 验证。
+- user-block smoke split 存在 unseen item：valid item 未出现在 train 的比例为 0.30998672，test item 未出现在 train 的比例为 0.30694255；后续 embedding / feature mapping 需要 OOV 处理。
 
 ## 尚未验证
 
 - 尚未验证 `hist_1` 到 `hist_10` 是否严格只使用 target event 之前的历史。
-- 尚未确定最终 split 方案、去重策略、dataloader、模型或指标结果。
+- 尚未实现 dataloader、feature mapping、GAUC 代码、模型或指标结果。
+- 尚未在 full data 上验证最终 split 方案和正式指标。

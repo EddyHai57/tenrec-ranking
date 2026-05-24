@@ -512,6 +512,124 @@ outputs/inspection/ctr_smoke_samples_report.md
 - 该 sample 保留完整 user blocks，适合调试 group-level metric 和按 user 的切分逻辑。
 - 该 sample 仍是开发样本，不代表全量评估。
 
+## Split feasibility check
+
+日期：2026-05-25
+
+命令：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\check_ctr_split_feasibility.py --input data\samples\ctr_user_block_1m_seed20260525.csv --output-dir outputs\inspection
+```
+
+输出文件：
+
+```text
+outputs/inspection/ctr_user_block_1m_split_feasibility.json
+outputs/inspection/ctr_user_block_1m_split_feasibility.md
+```
+
+### split 规则
+
+输入：`data/samples/ctr_user_block_1m_seed20260525.csv`
+
+规则：
+
+- 每个 user 内按文件顺序切分。
+- user rows `< 3`：全部进入 train。
+- user rows `>= 3`：按 80/10/10 切成 train / valid / test，valid 和 test 至少各 1 行。
+- 不打乱。
+- 不去重。
+- 保留原始 row order。
+
+短 user 分布：
+
+| user row count bucket | user count |
+| --- | ---: |
+| `1` | 8 |
+| `2` | 3 |
+| `>=3` | 8,170 |
+
+### split 基础统计
+
+| split | rows | users | items | `click=0` | `click=1` | positive rate | `follow=1` | `like=1` | `share=1` | missing `video_category` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| train | 807,282 | 8,181 | 222,829 | 611,818 | 195,464 | 0.24212605 | 1,172 | 16,418 | 1,816 | 10,134 |
+| valid | 96,459 | 8,170 | 54,212 | 70,725 | 25,734 | 0.26678693 | 101 | 1,547 | 129 | 1,278 |
+| test | 96,459 | 8,170 | 55,095 | 75,882 | 20,577 | 0.2133238 | 59 | 1,091 | 79 | 1,550 |
+
+`video_category` top values：
+
+| split | top values |
+| --- | --- |
+| train | `0`: 427,448；`1`: 369,700；`\N`: 10,134 |
+| valid | `0`: 54,492；`1`: 40,689；`\N`: 1,278 |
+| test | `0`: 54,266；`1`: 40,643；`\N`: 1,550 |
+
+### GAUC 可行性
+
+GAUC 只对同一 split 内同时有 click 正负样本的 user 有意义。
+
+| split | total users | valid GAUC users | only positive users | only negative users | rows `< 2` users | valid GAUC rows | row coverage rate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| valid | 8,170 | 5,677 | 312 | 2,181 | 590 | 84,225 | 0.87316891 |
+| test | 8,170 | 5,021 | 212 | 2,937 | 590 | 79,120 | 0.82024487 |
+
+判断：
+
+- valid / test 的 GAUC row coverage 分别约 87.3% 和 82.0%，smoke 阶段可用。
+- 仍有不少 only negative users，正式 full run 需要重新验证 GAUC 覆盖率。
+- 该结果只能支持 GAUC implementation / dataloader smoke，不能作为正式模型指标依据。
+
+### cold item / unseen item 风险
+
+| 检查 | count | rate |
+| --- | ---: | ---: |
+| valid item 未出现在 train | 16,805 | 0.30998672 |
+| test item 未出现在 train | 16,911 | 0.30694255 |
+| test item 未出现在 train + valid | 15,784 | 0.28648698 |
+
+判断：
+
+- unseen item 比例约 29%-31%，后续 embedding / feature mapping 必须支持 OOV item。
+- 如果第一版 baseline 直接用 ID embedding，需要显式定义 unknown item 处理。
+
+### feature 使用建议
+
+第一阶段 click baseline 可用：
+
+```text
+user_id
+item_id
+video_category
+gender
+age
+```
+
+暂时不要作为输入特征：
+
+```text
+watching_times
+hist_1 ... hist_10
+follow
+like
+share
+```
+
+原因：
+
+- `watching_times` 可能是 post-exposure / post-click 行为，有 leakage 风险。
+- `hist_1` 到 `hist_10` 构造口径未完全验证，第一版 click baseline 暂不使用。
+- `follow`、`like`、`share` 是多任务标签，不应作为 click baseline 输入特征，除非明确做多任务或 label leakage 对照。
+
+### 当前结论
+
+- `ctr_user_block_1m_seed20260525.csv` 适合 dataloader smoke。
+- `ctr_user_block_1m_seed20260525.csv` 适合 tiny LR / MLP overfit test。
+- `ctr_user_block_1m_seed20260525.csv` 不适合报告正式指标。
+- 当前可以进入最小 `src/` / `configs/` 设计，但范围应限制为 dataloader、split、feature mapping 和 metric smoke。
+- 下一步不应做 full training；应先设计最小数据契约、OOV 编码、GAUC 计算和 tiny baseline smoke。
+
 ## 初始数据契约草案
 
 第一版本地数据契约需要回答：
