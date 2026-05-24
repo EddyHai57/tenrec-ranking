@@ -331,11 +331,11 @@ git remote -v
 Codex 或独立 shell session 中 push 时，使用显式 SSH 命令，避免依赖 `ssh-agent` 状态：
 
 ```powershell
-$env:GIT_SSH_COMMAND='ssh -i C:\Users\Eddy\.ssh\github_key -o IdentitiesOnly=yes'
+$env:GIT_SSH_COMMAND='ssh -i C:/Users/Eddy/.ssh/github_key -o IdentitiesOnly=yes'
 git push -u origin main
 ```
 
-原因：不同 shell session 可能不共享 `ssh-agent`。即使 key 存在，普通 `git push` 也可能因 `Permission denied (publickey)` 失败。遇到这种情况，先验证 `ssh -T git@github.com`，不要无证据反复改 remote。
+原因：不同 shell session 可能不共享 `ssh-agent`。即使 key 存在，普通 `git push` 也可能因 `Permission denied (publickey)` 失败。`GIT_SSH_COMMAND` 中使用 forward slash 路径，避免 Windows backslash 被 `ssh` 解释成转义字符。遇到失败时，先验证 `ssh -T git@github.com`，不要无证据反复改 remote。
 
 push 前必须检查 staged 文件：
 

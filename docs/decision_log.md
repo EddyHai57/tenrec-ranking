@@ -80,7 +80,7 @@
 本地 Codex session 的 push 命令：
 
 ```powershell
-$env:GIT_SSH_COMMAND='ssh -i C:\Users\Eddy\.ssh\github_key -o IdentitiesOnly=yes'
+$env:GIT_SSH_COMMAND='ssh -i C:/Users/Eddy/.ssh/github_key -o IdentitiesOnly=yes'
 git push -u origin main
 ```
 
@@ -89,6 +89,7 @@ git push -u origin main
 - 没有 Eddy 明确要求，不 commit / push。
 - push 前必须检查 staged files。
 - 不假设后续训练服务器有这把 Windows SSH key；服务器 GitHub access 需要单独验证。
+- `GIT_SSH_COMMAND` 中使用 forward slash 路径，避免 Windows backslash 被 `ssh` 解释成转义字符。
 
 状态：作为仓库 workflow 已接受。
 
