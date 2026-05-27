@@ -388,3 +388,16 @@ Tenrec 边界：
 - 如果行为之间不是严格 funnel，ESMM 可能不适合，应降级为 MMOE / PLE。
 
 状态：已确认作为 Phase C 计划方向，尚未实现，不能写成项目成果或简历已完成内容。
+
+## 2026-05-28 - 暂不对 MLP / DeepFM 添加 base-rate output bias
+
+决策：GPU 前最后本地动作中，暂不对 MLP / DeepFM 添加 `output_bias_init: train_base_rate`。
+
+原因：
+
+- DCN-v2 已确认存在初始化 bug：默认 embedding 和 cross layer 初始化导致未训练预测概率偏离 train base rate，因此需要修复。
+- MLP 没有暴露同类初始化问题；此前 smoke 的初始 loss 和 overfit gate 均正常。
+- DeepFM 的已确认问题是 FM 二阶项初始化尺度过大，已通过小方差 FM embedding 初始化修复。
+- 给 MLP / DeepFM 增加 base-rate output bias 可能加快收敛，但属于训练策略优化，不是当前 bug fix；GPU 前保持最小变更，避免改变已有 smoke baseline 的解释边界。
+
+状态：已接受为本地收尾阶段决策。后续如果做 full / large-subset 训练配置优化，可以重新评估是否统一加入 base-rate bias。

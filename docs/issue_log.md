@@ -233,6 +233,204 @@ monitor_backend: psutil
 
 Closed
 
+## ISSUE-20260528-001 - DeepFM 默认 embedding 初始化导致 FM 二阶 logit 过宽
+
+### 日期
+
+2026-05-28
+
+### 类型
+
+training / code
+
+### 现象
+
+第一次 DeepFM train smoke 虽然可以运行，但 valid LogLoss 明显异常：
+
+```text
+run_id: 20260528-010535-deepfm_smoke-deepfm
+best valid LogLoss: 1.4114884493428632
+```
+
+进一步诊断同一 batch 上的初始化 logits：
+
+```text
+deepfm mean -1.7845935821533203
+deepfm std 9.780134201049805
+deepfm min -32.292457580566406
+deepfm max 51.47307205200195
+```
+
+对照：
+
+```text
+mlp std 0.04044552147388458
+dcnv2 std 0.9319897890090942
+```
+
+### 根因或当前假设
+
+DeepFM 的 FM 二阶项使用 sum-square trick。PyTorch `nn.Embedding` 默认接近 `N(0,1)` 初始化，多个 field embedding 做二阶交叉后会把初始 logit 撑得过宽，导致 sigmoid 饱和和 LogLoss 异常。
+
+### 修复或 workaround
+
+- DeepFM 一阶 scalar embedding 初始化为 0。
+- DeepFM FM embedding 使用小方差 normal 初始化：
+
+```text
+mean: 0.0
+std: 0.01
+```
+
+- 增加单元测试，约束 DeepFM 初始 logits 不被 FM 二阶项撑爆。
+
+### 验证
+
+模型单测通过：
+
+```text
+Ran 5 tests
+OK
+```
+
+DeepFM overfit 通过：
+
+```text
+initial_loss: 0.6765590310096741
+final_loss: 1.746938149693733e-09
+target_loss: 0.05
+passed: true
+```
+
+修正后 DeepFM train smoke：
+
+```text
+run_id: 20260528-010753-deepfm_smoke-deepfm
+best valid LogLoss: 0.5821876039626651
+best valid AUC: 0.6712964224072929
+best valid GAUC: 0.5984632023912543
+GAUC coverage: 0.89796
+```
+
+### 状态
+
+Closed
+
+## ISSUE-20260528-002 - DCN-v2 默认初始化导致初始概率偏离 train base rate
+
+### 日期
+
+2026-05-28
+
+### 类型
+
+training / code
+
+### 现象
+
+DCN-v2 overfit gate 可以通过，但初始 smoke 表现接近随机：
+
+```text
+run_id: 20260528-010814-dcnv2_smoke-dcnv2
+best valid AUC: 0.5340191846947128
+best valid GAUC: 0.509562857013943
+best valid LogLoss: 0.5963719971695486
+```
+
+复跑 `20260528-012130-dcnv2_smoke-dcnv2` 后确认：
+
+```text
+epoch 1 train AUC: 0.5596665820712516
+epoch 1 valid AUC: 0.5241001837053098
+epoch 4 train AUC: 0.6502114529137548
+epoch 4 valid AUC: 0.549233990622756
+```
+
+### 证据
+
+未训练模型在 50k train rows 上：
+
+```text
+batch base rate: 0.266400009393692
+constant batch base LogLoss: 0.5796452164649963
+init LogLoss: 0.7147810888671875
+mean predicted probability: 0.40860605239868164
+logit std: 1.0905441045761108
+embedding std mean: 0.9925519704818726
+cross weight std: ~0.111
+output bias: 0.05396714061498642
+```
+
+### 根因或当前假设
+
+DCN-v2 直接使用 PyTorch 默认 `nn.Embedding` 初始化，embedding 近似 `N(0,1)`。这些 embedding 拼接后进入矩阵式 cross layer，乘法交叉会放大初始 logit 方差。
+
+同时 output bias 没有对齐 train base rate，导致平均预测概率明显高于训练集正例率。
+
+注意：`scripts/train.py --overfit` 输出里的 `initial_loss` 是第 1 个 overfit epoch 之后的 loss，不是未训练 loss；未训练 loss 需要单独诊断。
+
+### 修复或 workaround
+
+- DCN-v2 embedding 初始化为小方差 normal：
+
+```text
+mean: 0.0
+std: 0.01
+```
+
+- DCN-v2 cross layer weight 初始化为小方差 normal：
+
+```text
+mean: 0.0
+std: 0.01
+```
+
+- deep / output linear bias 初始化为 0。
+- `configs/dcnv2_smoke.yaml` 使用：
+
+```yaml
+output_bias_init: train_base_rate
+```
+
+- `src/tenrec/training.py` 从 `metadata["pass2"]["label_counts"]["train"]` 计算 train base logit，避免在 config 中 hardcode 当前 sample 的 base rate。
+
+### 验证
+
+修复后未训练模型：
+
+```text
+metadata train base logit: -1.1410586334170694
+init LogLoss: 0.5812454168701172
+mean predicted probability: 0.24155035614967346
+logit std: 0.008613877929747105
+embedding std mean: 0.009735829196870327
+cross weight std: ~0.010
+output bias: -1.1410586833953857
+```
+
+修复后 overfit：
+
+```text
+final_loss: 5.579277009237912e-20
+target_loss: 0.05
+passed: true
+```
+
+修复后 train smoke：
+
+```text
+run_id: 20260528-012603-dcnv2_smoke-dcnv2
+best_epoch: 1
+best valid AUC: 0.6689654983604069
+best valid GAUC: 0.5930922436479876
+best valid LogLoss: 0.5616743797625655
+GAUC coverage: 0.89796
+```
+
+### 状态
+
+Closed
+
 未来 issue 必须记录：
 
 - 日期

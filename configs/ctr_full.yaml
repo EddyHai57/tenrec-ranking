@@ -1,0 +1,43 @@
+input_path: data/Tenrec/ctr_data_1M.csv
+output_root: outputs/preprocessed
+
+label_column: click
+group_column: user_id
+
+features:
+  categorical:
+    - user_id
+    - item_id
+    - video_category
+    - gender
+    - age
+
+missing_values:
+  user_id:
+    - ""
+    - "\\N"
+  item_id:
+    - ""
+    - "\\N"
+  video_category:
+    - ""
+    - "\\N"
+  gender:
+    - ""
+    - "\\N"
+  age:
+    - ""
+    - "\\N"
+
+split:
+  train_ratio: 0.8
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  deterministic_user_order: true
+  shuffle: false
+  deduplicate: false
+  seed_used_by_split: false
+
+full:
+  source: data/Tenrec/ctr_data_1M.csv
+  note: "Full local preprocessing for strict protocol; outputs are ignored and must not enter git."

@@ -1,0 +1,42 @@
+run:
+  name: dcnv2_smoke
+  seed: 20260525
+  output_dir: outputs/runs
+  device: auto
+
+data:
+  metadata_path: outputs/preprocessed/ctr-454e7ccb12f7/metadata.json
+  batch_size: 1024
+  eval_batch_size: 4096
+  max_train_rows: 100000
+  max_valid_rows: 50000
+  train_shuffle: materialized
+  shuffle_bucket_count: 16
+  note: "max_*_rows is head truncation and is smoke-only; do not report as formal metrics."
+
+model:
+  name: dcnv2
+  dcnv2:
+    embedding_dim: 16
+    cross_layers: 2
+    deep_hidden_dims: [64, 32]
+    dropout: 0.0
+    output_bias_init: train_base_rate
+
+train:
+  epochs: 5
+  lr: 0.001
+  weight_decay: 0.0
+  class_reweighting: false
+  resampling: false
+  checkpoint_metric: logloss
+  checkpoint_mode: min
+  patience: 2
+  eval_train_metrics: true
+
+overfit:
+  num_batches: 1
+  batch_size: 64
+  epochs: 160
+  lr: 0.01
+  target_loss: 0.05

@@ -370,3 +370,360 @@ Metrics：
 - Output path
 - 结论
 - 已知限制
+
+## 2026-05-28 — DeepFM / DCN-v2 local smoke
+
+类型：`tiny subset training / smoke test`
+
+目的：
+
+- 补齐 strict protocol baseline 阶梯：`LR -> MLP -> DeepFM -> DCN-v2`。
+- 验证 DeepFM / DCN-v2 能复用现有 metadata、物化数据读取、训练、评估、overfit、checkpoint 和 metrics 流程。
+- 只做本地 CPU smoke，不作为正式模型结果。
+
+共同限制：
+
+- 输入为 `outputs/preprocessed/ctr-454e7ccb12f7/metadata.json`。
+- 数据来自 `ctr_user_block_1m_seed20260525.csv` 的物化结果。
+- 使用 `max_train_rows=100000` 和 `max_valid_rows=50000`，因此只允许作为 smoke。
+- 不做 class reweighting，不做重采样。
+- 使用 materialized hash-bucket shuffled train CSV。
+
+### Run: `deepfm_overfit`
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\train.py --config configs\deepfm_smoke.yaml --overfit --device cpu
+```
+
+Result：
+
+```text
+initial_loss: 0.6765590310096741
+final_loss: 1.746938149693733e-09
+target_loss: 0.05
+passed: true
+```
+
+结论：DeepFM forward / loss / backward 可以在单 batch 上过拟合。
+
+### Run: `dcnv2_overfit`
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\train.py --config configs\dcnv2_smoke.yaml --overfit --device cpu
+```
+
+Result：
+
+```text
+initial_loss: 0.908693790435791
+final_loss: 3.74729802388174e-06
+target_loss: 0.05
+passed: true
+```
+
+结论：DCN-v2 forward / loss / backward 可以在单 batch 上过拟合。
+
+### Run: `20260528-010753-deepfm_smoke-deepfm`
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\train.py --config configs\deepfm_smoke.yaml --device cpu
+```
+
+Output：
+
+```text
+outputs/runs/20260528-010753-deepfm_smoke-deepfm/
+outputs/runs/20260528-010753-deepfm_smoke-deepfm/metrics.jsonl
+outputs/runs/20260528-010753-deepfm_smoke-deepfm/summary.json
+outputs/runs/20260528-010753-deepfm_smoke-deepfm/checkpoints/best.pt
+```
+
+Metrics：
+
+| epoch | train loss | valid AUC | valid GAUC | GAUC coverage | valid LogLoss |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.5864733688545227 | 0.6609157271411433 | 0.5932246750132204 | 0.89796 | 0.5829442686843472 |
+| 2 | 0.47309519799232486 | 0.6712964224072929 | 0.5984632023912543 | 0.89796 | 0.5821876039626651 |
+| 3 | 0.3278996840763092 | 0.6548994740541586 | 0.5943389296777046 | 0.89796 | 0.691819411284184 |
+| 4 | 0.2517506833028793 | 0.6496638645610264 | 0.591013837262858 | 0.89796 | 0.7623940945371613 |
+
+Best checkpoint：
+
+```text
+epoch: 2
+checkpoint metric: logloss
+best metric: 0.5821876039626651
+```
+
+结论：DeepFM 已接入一条命令训练、valid 评估、metrics 和 checkpoint 流程。该 smoke 中 epoch 2 后 valid LogLoss 变差，说明 head-truncated 小样本下存在过拟合趋势，不能作为正式模型结论。
+
+### Run: `20260528-010814-dcnv2_smoke-dcnv2`
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\train.py --config configs\dcnv2_smoke.yaml --device cpu
+```
+
+Output：
+
+```text
+outputs/runs/20260528-010814-dcnv2_smoke-dcnv2/
+outputs/runs/20260528-010814-dcnv2_smoke-dcnv2/metrics.jsonl
+outputs/runs/20260528-010814-dcnv2_smoke-dcnv2/summary.json
+outputs/runs/20260528-010814-dcnv2_smoke-dcnv2/checkpoints/best.pt
+```
+
+Metrics：
+
+| epoch | train loss | valid AUC | valid GAUC | GAUC coverage | valid LogLoss |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.5673010801887512 | 0.5241001837053098 | 0.5076045845847659 | 0.89796 | 0.59944790928456 |
+| 2 | 0.5467337486839294 | 0.5340191846947128 | 0.509562857013943 | 0.89796 | 0.5963719971695486 |
+| 3 | 0.5409393929290771 | 0.5412185870660677 | 0.5123980166464907 | 0.89796 | 0.5967281034435536 |
+| 4 | 0.5340481583976746 | 0.549233990622756 | 0.5147455230827509 | 0.89796 | 0.5983962953976021 |
+
+Best checkpoint：
+
+```text
+epoch: 2
+checkpoint metric: logloss
+best metric: 0.5963719971695486
+```
+
+结论：DCN-v2 已接入一条命令训练、valid 评估、metrics 和 checkpoint 流程。该 smoke 中 valid AUC / GAUC 较弱，只能说明本地 smoke 配置下尚未形成强泛化结论，不阻塞后续 large/full subset 验证。
+
+## 2026-05-28 — DCN-v2 initialization diagnosis and rerun
+
+类型：`tiny subset training / diagnostic`
+
+目的：
+
+- 诊断 DCN-v2 valid AUC 接近随机的问题。
+- 检查未训练初始化的预测概率、LogLoss 和 logit 分布。
+- 只修初始化尺度，不做超参搜索。
+
+### 修复前复跑：`20260528-012130-dcnv2_smoke-dcnv2`
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\train.py --config configs\dcnv2_smoke.yaml --device cpu
+```
+
+Metrics：
+
+| epoch | train AUC | valid AUC | train GAUC | valid GAUC | valid LogLoss |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.5596665820712516 | 0.5241001837053098 | 0.5395428199899386 | 0.5076045845847659 | 0.59944790928456 |
+| 2 | 0.5909355377465221 | 0.5340191846947128 | 0.5663241825971963 | 0.509562857013943 | 0.5963719971695486 |
+| 3 | 0.6185828145981577 | 0.5412185870660677 | 0.5887942039563439 | 0.5123980166464907 | 0.5967281034435536 |
+| 4 | 0.6502114529137548 | 0.549233990622756 | 0.6152072043892258 | 0.5147455230827509 | 0.5983962953976021 |
+
+判断：
+
+- train AUC 有学习趋势，但 valid AUC 仍偏弱。
+- 问题不是完全学不动，更像初始化和 tiny smoke 泛化共同影响。
+
+### 未训练初始化诊断
+
+在 50k train rows 上，修复前：
+
+```text
+batch base rate: 0.266400009393692
+constant batch base LogLoss: 0.5796452164649963
+init LogLoss: 0.7147810888671875
+mean predicted probability: 0.40860605239868164
+logit std: 1.0905441045761108
+embedding std mean: 0.9925519704818726
+cross weight std: ~0.111
+output bias: 0.05396714061498642
+```
+
+修复后：
+
+```text
+metadata train base logit: -1.1410586334170694
+init LogLoss: 0.5812454168701172
+mean predicted probability: 0.24155035614967346
+logit std: 0.008613877929747105
+embedding std mean: 0.009735829196870327
+cross weight std: ~0.010
+output bias: -1.1410586833953857
+```
+
+解释：
+
+- 之前 `nn.Embedding` 默认接近 `N(0,1)`，直接进入 DCN-v2 cross network，导致初始 logit 过宽。
+- output bias 未对齐 train base rate，使平均预测概率明显高于 base rate。
+- 修复后 init LogLoss 接近 constant-base LogLoss，初始化不再把模型推到错误概率区间。
+
+### 修复后 overfit：`dcnv2_overfit`
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\train.py --config configs\dcnv2_smoke.yaml --overfit --device cpu
+```
+
+Result：
+
+```text
+initial_loss: 0.40232211351394653
+final_loss: 5.579277009237912e-20
+target_loss: 0.05
+passed: true
+```
+
+注意：`run_overfit` 当前记录的 `initial_loss` 是第 1 个 overfit epoch 后的 loss，不是严格未训练 loss；未训练 loss 以上面的初始化诊断为准。
+
+### 修复后 train smoke：`20260528-012603-dcnv2_smoke-dcnv2`
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\train.py --config configs\dcnv2_smoke.yaml --device cpu
+```
+
+Output：
+
+```text
+outputs/runs/20260528-012603-dcnv2_smoke-dcnv2/
+outputs/runs/20260528-012603-dcnv2_smoke-dcnv2/metrics.jsonl
+outputs/runs/20260528-012603-dcnv2_smoke-dcnv2/summary.json
+outputs/runs/20260528-012603-dcnv2_smoke-dcnv2/checkpoints/best.pt
+```
+
+Metrics：
+
+| epoch | train AUC | valid AUC | train GAUC | valid GAUC | GAUC coverage | valid LogLoss |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.8646336669951349 | 0.6689654983604069 | 0.8661423294790751 | 0.5930922436479876 | 0.89796 | 0.5616743797625655 |
+| 2 | 0.9507707756335112 | 0.6515789328198313 | 0.9283259730720234 | 0.5903481854927853 | 0.89796 | 0.6405017679536366 |
+| 3 | 0.9670724073822755 | 0.6475846881987664 | 0.9424242555560012 | 0.5875580599389937 | 0.89796 | 0.7040453644895988 |
+
+Best checkpoint：
+
+```text
+epoch: 1
+checkpoint metric: logloss
+best metric: 0.5616743797625655
+```
+
+结论：
+
+- DCN-v2 valid AUC 接近随机的主要原因是初始化尺度和 output bias 问题。
+- 修复后模型不再近随机，但 train AUC 很快明显高于 valid AUC，head-truncated smoke 存在过拟合趋势。
+- 该结果仍是 smoke，不是正式模型指标。
+
+## 2026-05-28 — Full 120M strict preprocessing
+
+类型：`preprocessing / full data`
+
+目的：
+
+- 在本地 CPU 上对完整 `data/Tenrec/ctr_data_1M.csv` 运行 strict protocol 两遍流式预处理。
+- 补全 G1 内存有界证据：从 1M、10M 扩展到 full 120M。
+- 生成后续 GPU 训练使用的 full materialized splits 和 hash-bucket shuffled train CSV。
+
+前置磁盘检查：
+
+```text
+D: free bytes: 236,546,326,528
+```
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_with_resource_monitor.py --output outputs\inspection\preprocess_full_resource_monitor_psutil.json --interval 1.0 -- .\.venv\Scripts\python.exe scripts\preprocess_ctr_data.py --config configs\ctr_full.yaml
+```
+
+Output：
+
+```text
+outputs/preprocessed/ctr-3999a64f6fad/
+outputs/preprocessed/ctr-3999a64f6fad/metadata.json
+outputs/preprocessed/ctr-3999a64f6fad/materialized/train.csv
+outputs/preprocessed/ctr-3999a64f6fad/materialized/valid.csv
+outputs/preprocessed/ctr-3999a64f6fad/materialized/test.csv
+outputs/inspection/preprocess_full_resource_monitor_psutil.json
+```
+
+Preprocessing result：
+
+| item | value |
+| --- | ---: |
+| run_id | `ctr-3999a64f6fad` |
+| train rows | 97,146,674 |
+| valid rows | 11,597,816 |
+| test rows | 11,597,816 |
+| peak RSS | 453.531 MiB |
+| monitor backend | psutil |
+| Pass1 elapsed | 448.759s |
+| Pass2 elapsed | 889.919s |
+| total monitor elapsed | 1341.987s |
+| user_id vocab size | 999,449 |
+| item_id vocab size | 2,125,651 |
+| video_category vocab size | 4 |
+| gender vocab size | 5 |
+| age vocab size | 10 |
+
+OOV 不变量：
+
+| split | user_id OOV rows | item_id OOV rows | item_id OOV rate |
+| --- | ---: | ---: | ---: |
+| valid | 0 | 100,564 | 0.008670942874072152 |
+| test | 0 | 103,567 | 0.008929870934320738 |
+
+Label counts：
+
+| split | click=0 | click=1 |
+| --- | ---: | ---: |
+| train | 73,764,358 | 23,382,316 |
+| valid | 8,556,785 | 3,041,031 |
+| test | 9,140,303 | 2,457,513 |
+
+Materialized file sizes：
+
+| file | bytes |
+| --- | ---: |
+| `train.csv` | 2,128,091,876 |
+| `valid.csv` | 254,545,792 |
+| `test.csv` | 254,929,019 |
+
+### Full hash-bucket shuffled train
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe - <ensure_shuffled_train metadata=outputs/preprocessed/ctr-3999a64f6fad/metadata.json seed=20260525 bucket_count=64>
+```
+
+Output：
+
+```text
+outputs/preprocessed/ctr-3999a64f6fad/materialized/train_shuffled_seed20260525_b64.csv
+size bytes: 2,128,091,876
+```
+
+G1 memory comparison：
+
+| run | rows | peak RSS | note |
+| --- | ---: | ---: | --- |
+| 1M | 1,000,200 | 54.77 MiB | `ctr-454e7ccb12f7` |
+| 10M | 10,000,035 | 136.68 MiB | `ctr-1961cdee479f` |
+| full | 120,342,306 | 453.531 MiB | `ctr-3999a64f6fad` |
+
+判断：
+
+- full 行数约为 10M 的 12 倍，但 peak RSS 从 136.68 MiB 增至 453.531 MiB，没有接近按行数线性增长。
+- 内存增长主要来自 full train vocab，尤其 `item_id` vocab 从 766,087 增至 2,125,651。
+- valid/test `user_id` OOV 均为 0，符合 user 内顺序 split 不变量。
+- full valid/test `item_id` OOV 率约 0.87% / 0.89%，低于 10M 的约 4.8% / 5.0%，符合训练覆盖度增加后 OOV 压力下降的预期。
+- 本 run 只是 full preprocessing 产物，不包含模型训练指标。

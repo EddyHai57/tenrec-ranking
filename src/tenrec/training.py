@@ -1,4 +1,6 @@
+import copy
 import json
+import math
 import random
 import subprocess
 import time
@@ -45,6 +47,24 @@ def resolve_device(device_name: str) -> torch.device:
     if device_name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(device_name)
+
+
+def train_base_logit(metadata: dict) -> float:
+    label_counts = metadata["pass2"]["label_counts"]["train"]
+    positive_count = float(label_counts.get("1", 0))
+    negative_count = float(label_counts.get("0", 0))
+    if positive_count <= 0 or negative_count <= 0:
+        raise ValueError("Cannot compute train base logit from single-class train labels")
+    return math.log(positive_count / negative_count)
+
+
+def resolve_model_config(config: dict, metadata: dict) -> dict:
+    model_config = copy.deepcopy(config["model"])
+    if model_config.get("name") == "dcnv2":
+        dcnv2_config = model_config.get("dcnv2", {})
+        if dcnv2_config.get("output_bias_init") == "train_base_rate":
+            dcnv2_config["output_bias_init"] = train_base_logit(metadata)
+    return model_config
 
 
 def make_run_id(config: dict) -> str:
@@ -210,7 +230,8 @@ def run_training(config: dict) -> dict:
         train_path = split_path(metadata, "train")
     valid_path = split_path(metadata, "valid")
 
-    model = build_model(config["model"], vocab_sizes, feature_columns).to(device)
+    model_config = resolve_model_config(config, metadata)
+    model = build_model(model_config, vocab_sizes, feature_columns).to(device)
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -323,7 +344,8 @@ def run_overfit(config: dict) -> dict:
         num_batches=int(config["overfit"]["num_batches"]),
         device=device,
     )
-    model = build_model(config["model"], vocab_sizes, feature_columns).to(device)
+    model_config = resolve_model_config(config, metadata)
+    model = build_model(model_config, vocab_sizes, feature_columns).to(device)
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=float(config["overfit"]["lr"]))
     losses = []
