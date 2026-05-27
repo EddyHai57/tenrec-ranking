@@ -645,6 +645,361 @@ share
 9. 用户历史是否能只用 target event 之前的事件构造？
 10. 哪些字段可为后续 multi-task learning 预留？
 
+## MVP 数据契约 v0.1
+
+日期：2026-05-25
+
+本节是第一版 click prediction 数据层实现的事实契约。后续 `data.py`、preprocessing、metric 和 server runbook 必须以本节为准。
+
+### 任务与输入字段
+
+- 主任务：点击率预测（CTR / click prediction）。
+- label：`click`，`1` 为 click positive，`0` 为真实曝光负样本。
+- 一行样本：一次 exposure-like row，不是唯一 `(user_id,item_id)` pair。
+- 第一阶段输入特征：
+  - `user_id`
+  - `item_id`
+  - `video_category`
+  - `gender`
+  - `age`
+- 暂不作为输入：
+  - `watching_times`：可能是 post-exposure / post-click 行为。
+  - `hist_1` 到 `hist_10`：构造口径仍未完全验证，暂不进入 MVP baseline。
+  - `follow`、`like`、`share`：多任务标签，不作为单任务 click baseline 输入。
+
+`gender` 和 `age` 已在全量 inspection 中确认没有 `\N` 缺失；第一版仍按 categorical vocab 编码，并保留统一 missing 槽，避免后续字段扩展时出现编码分叉。
+
+### Split 整数公式
+
+每个 user block 保持原始文件内顺序，不 shuffle、不去重。
+
+```text
+如果 N < 3:
+    train = N
+    valid = 0
+    test = 0
+
+如果 N >= 3:
+    valid = max(1, floor(0.1 * N))
+    test  = max(1, floor(0.1 * N))
+    train = N - valid - test
+```
+
+边界：
+
+```text
+train: [0, train)
+valid: [train, train + valid)
+test : [train + valid, N)
+```
+
+示例：
+
+| N | train | valid | test |
+| ---: | ---: | ---: | ---: |
+| 1 | 1 | 0 | 0 |
+| 2 | 2 | 0 | 0 |
+| 3 | 1 | 1 | 1 |
+| 7 | 5 | 1 | 1 |
+| 10 | 8 | 1 | 1 |
+| 99 | 81 | 9 | 9 |
+| 100 | 80 | 10 | 10 |
+
+实现约束：
+
+- split 逻辑只在 `src/tenrec/data.py` 中实现。
+- `scripts/check_ctr_split_feasibility.py` 已改为调用同一个 split 函数。
+- 重构后在 `ctr_user_block_1m_seed20260525.csv` 上复现 oracle：
+  - train：807,282
+  - valid：96,459
+  - test：96,459
+
+注意：上述 oracle 是重构后重新运行得到的验证结果，不是为了匹配旧脚本而调整新函数。
+
+### Vocab 与编码
+
+词表构建规则：
+
+- 只使用 train split 的行构建 vocab。
+- valid/test 未见值映射到 OOV。
+- 不允许用全文件建表。
+- vocab 是派生产物，落盘到 `outputs/preprocessed/{run_id}/vocabs/`。
+
+统一 reserved index：
+
+```text
+0 = OOV
+1 = missing
+2.. = train 中出现过的正常取值
+```
+
+适用于全部 categorical features，包括 `user_id`、`item_id`、`video_category`、`gender`、`age`。
+
+missing 判定优先于 OOV 判定：
+
+```text
+如果原始值是 "" 或 "\N"，编码为 1。
+否则如果值不在 train vocab 中，编码为 0。
+否则使用 vocab 中的 seen index。
+```
+
+`video_category` 的 `\N` 编码为 missing，而不是 OOV。
+
+回归断言：
+
+- 由于 split 是 user 内顺序切分，`valid/test` 的 `user_id` OOV 率理论上必须为 0。
+- 如果 `valid/test` 出现 `user_id` OOV，说明 split 或 vocab 实现存在错误，应直接失败。
+- `item_id` OOV 是预期现象，1M sample 中 valid/test 均存在较高 unseen item。
+
+### 两遍流式预处理
+
+全量 `ctr_data_1M.csv` 有 120,342,306 行，不能围绕一次性 DataFrame load 设计。
+
+采用两遍流式预处理：
+
+```text
+Pass 1:
+    流式扫描原始 CSV
+    按 user block 使用同一 split 函数
+    只累积 train 行中的 feature value 进入 vocab
+    冻结 vocab
+
+Pass 2:
+    再次流式扫描原始 CSV
+    使用同一 split 函数
+    用冻结 vocab 编码 train/valid/test
+    物化为 split CSV 文件
+```
+
+物化输出：
+
+```text
+outputs/preprocessed/{run_id}/metadata.json
+outputs/preprocessed/{run_id}/vocabs/*.json
+outputs/preprocessed/{run_id}/materialized/train.csv
+outputs/preprocessed/{run_id}/materialized/valid.csv
+outputs/preprocessed/{run_id}/materialized/test.csv
+```
+
+`run_id` 由输入文件名、输入文件大小、config、数据契约版本和预处理版本生成确定性 hash。`metadata.json` 记录输入、config、split、reserved index、vocab size、OOV/missing 统计和 git commit。
+
+### GAUC 口径
+
+采用 impression-weighted GAUC：
+
+```text
+GAUC = sum(user_auc * user_impressions) / sum(user_impressions)
+```
+
+只对同一 split 内同时有 positive 和 negative label 的 user 计算 user AUC。only-positive / only-negative user 跳过。
+
+任何 GAUC 输出必须同时报告：
+
+- GAUC
+- valid GAUC user count
+- total user count
+- valid GAUC row count
+- total row count
+- row coverage rate
+
+原因：跳过单类用户后，GAUC 的有效行覆盖率会低于 100%。例如 1M sample 的 valid/test GAUC row coverage 分别约为 87.3% 和 82.0%，单独报告 GAUC 数值会误导。
+
+### 不去重限制
+
+MVP 不去重。
+
+原因：
+
+- 全量 probe 发现完全重复行 883,646 条。
+- 重复 `(user_id,item_id)` 为 1,810,484 条。
+- 重复 pair 中 click 冲突为 560,994 条。
+- `(user_id,item_id)` 不是唯一曝光键，机械去重会改变样本语义。
+
+已知限制：
+
+- 完全重复行可能跨 train/valid/test 分裂，带来轻微记忆风险。
+- 该限制必须在实验日志和项目总结中保留，不能把 smoke / limited result 写成正式结论。
+
+### Seed 作用域
+
+`20260525` 只用于生成 smoke sample 时选择 user blocks。
+
+split 本身是确定性 user-order split，不依赖 seed。
+
+### 本地验证结果
+
+已实现：
+
+- `src/tenrec/data.py`：split、train-only vocab、OOV/missing 编码、两遍流式预处理和物化输出。
+- `src/tenrec/metrics.py`：AUC、LogLoss、impression-weighted GAUC。
+- `tests/test_data_contract.py`：split 整数公式、missing 优先于 OOV、train-only vocab 和 `user_id` OOV 断言。
+- `tests/test_metrics.py`：AUC / LogLoss known-answer，GAUC 单类用户跳过和 coverage。
+
+100k smoke sample 预处理：
+
+```text
+run_id: ctr-78004c39c1dd
+train/valid/test rows: 80672 / 9664 / 9664
+```
+
+1M user-block smoke sample 预处理：
+
+```text
+run_id: ctr-454e7ccb12f7
+train/valid/test rows: 807282 / 96459 / 96459
+```
+
+1M sample 物化后 OOV/missing 摘要：
+
+- `valid item_id` OOV rows：17,367。
+- `test item_id` OOV rows：17,577。
+- `valid/test user_id` OOV：0。
+- `video_category` missing rows：
+  - train：10,134
+  - valid：1,278
+  - test：1,550
+
+sklearn LR learnability smoke 只消费物化后的编码数据，不绕过 preprocessing pipeline。1M sample 上使用前 100,000 train rows 和前 50,000 valid rows：
+
+- train AUC：0.8866438867118259
+- train LogLoss：0.4080319738212789
+- train GAUC：0.9012071068750077，coverage 0.99388
+- valid AUC：0.6283948058203263
+- valid LogLoss：0.5718098163083559
+- valid GAUC：0.6032205118880077，coverage 0.89796
+
+该结果只证明数据管道可学习，不是正式模型结果。
+
+### torch baseline 训练契约
+
+日期：2026-05-27
+
+本地 CPU smoke 已加入 torch LR / MLP。训练层继续遵守 MVP 数据契约：
+
+- 只消费 `outputs/preprocessed/{run_id}/materialized/*.csv`。
+- vocab size、feature list 和 split path 从 `metadata.json` 读取。
+- 不直接读取 raw CSV。
+- 不重新构建 vocab。
+- 不绕过 OOV/missing 编码。
+
+LR 参数化：
+
+```text
+logit = bias + sum(field_scalar_lookup[field_value])
+```
+
+即每个 categorical field 使用 `[vocab_size, 1]` 的 scalar lookup。`embedding_dim` 只对 MLP 生效。
+
+CTR baseline 训练目标：
+
+- 使用普通 `BCEWithLogitsLoss`。
+- 不使用 `pos_weight`。
+- 不做 class reweighting。
+- 不做正负样本重采样。
+
+原因：LogLoss 需要概率校准，重加权或重采样会改变目标。
+
+训练 shuffle：
+
+- 物化 train 文件按 user 排列。
+- 不使用小 `shuffle_buffer_size` 作为主要混洗机制。
+- 训练前生成 deterministic hash-bucket shuffled train CSV。
+
+当前本地生成：
+
+```text
+outputs/preprocessed/ctr-454e7ccb12f7/materialized/train_shuffled_seed20260525_b16.csv
+```
+
+`metadata_path`：
+
+- config 中可以写本地 smoke metadata。
+- `scripts/train.py` 必须支持 `--metadata` 覆盖。
+- 服务器 full preprocessing 会生成新 run_id，不能假设本地 `ctr-454e7ccb12f7` 存在。
+
+`max_train_rows` / `max_valid_rows`：
+
+- 这是 head 截断。
+- 只允许用于 smoke。
+- 任何带 `max_*_rows` 的 run 不允许作为正式指标报告。
+
+### 10M preprocessing 内存验证
+
+日期：2026-05-27
+
+目的：服务器 full preprocessing 前，验证两遍流式预处理不会在 10M 级别样本上整文件 load 或按行数线性爆内存。
+
+样本：
+
+```text
+data/samples/ctr_user_block_10m_seed20260525.csv
+rows: 10,000,035
+users: 82,761
+file size bytes: 886,528,483
+```
+
+预处理：
+
+```text
+config: configs/ctr_user_block_10m.yaml
+run_id: ctr-1961cdee479f
+peak RSS: 136.68 MiB
+monitor backend: psutil
+Pass1 elapsed: 38.223s
+Pass2 elapsed: 71.914s
+```
+
+split：
+
+```text
+train: 8,072,351
+valid: 963,842
+test: 963,842
+```
+
+vocab：
+
+```text
+user_id: 82,763
+item_id: 766,087
+video_category: 4
+gender: 5
+age: 10
+```
+
+OOV 不变量：
+
+```text
+valid/test user_id OOV: 0
+valid item_id OOV rows: 46,239, rate 0.04797363053280517
+test item_id OOV rows: 47,786, rate 0.04957866538291546
+```
+
+物化输出大小：
+
+```text
+train.csv: 167,999,362 bytes
+valid.csv: 19,920,285 bytes
+test.csv: 19,946,855 bytes
+total: 207,866,502 bytes
+```
+
+1M 对照：
+
+```text
+run_id: ctr-454e7ccb12f7
+peak RSS: 54.77 MiB
+user_id vocab: 8,183
+item_id vocab: 222,831
+```
+
+判断：
+
+- 10M 行数约为 1M 的 10 倍，但 peak RSS 只从 54.77 MiB 增至 136.68 MiB。
+- 内存增长主要来自 vocab 条目增加，不是保存全部行。
+- 当前未发现两遍预处理存在 hidden full-file buffer。
+- full 120M 仍需在服务器验证。
+
 ## Tenrec 小样本检查计划
 
 1. 访问官方 dataset page；如需 license terms，手动确认。

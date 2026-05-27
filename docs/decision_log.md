@@ -109,3 +109,125 @@ git push -u origin main
 - 专有名词保留英文可减少歧义，也便于后续代码、论文和面试材料对齐。
 
 状态：已接受，并已同步到 `AGENTS.md`。
+
+## 2026-05-25 - MVP 数据层采用两遍流式预处理
+
+决策：第一版数据层不围绕 pandas 全量 DataFrame 设计，采用两遍流式预处理。
+
+流程：
+
+```text
+Pass 1: 按 user block 流式扫描，使用唯一 split 函数，只从 train 行构建 vocab
+Pass 2: 再次按 user block 流式扫描，使用冻结 vocab 编码并物化 train/valid/test
+```
+
+原因：
+
+- `ctr_data_1M.csv` 本地实测有 120,342,306 行，约 9.94 GiB。
+- valid/test 的 OOV 判定必须基于完整 train vocab；边扫边编码会导致早期 valid/test 被错误判为 OOV。
+- 两遍扫描能保证本地 smoke 和服务器 full preprocessing 使用同一口径。
+
+状态：已实现于 `src/tenrec/data.py`，并在 100k 和 1M smoke sample 上验证。
+
+## 2026-05-25 - Vocab 采用 train-only 和统一 reserved index
+
+决策：所有 categorical feature 的 vocab 只使用 train split 构建，并统一 reserved index。
+
+```text
+0 = OOV
+1 = missing
+2.. = train seen values
+```
+
+适用字段：
+
+```text
+user_id
+item_id
+video_category
+gender
+age
+```
+
+原因：
+
+- `valid/test` 未见值不能进入 vocab，否则会造成信息泄漏。
+- `item_id` 在 1M sample 中 valid/test 有大量 unseen item，必须显式 OOV。
+- `video_category` 的 `\N` 是 missing 语义，不应与 unseen OOV 混淆。
+- 统一 reserved index 能减少跨字段 hardcode 造成的实现错误。
+
+状态：已实现并通过单元测试。
+
+## 2026-05-25 - GAUC 采用 impression-weighted 并强制报告 coverage
+
+决策：MVP 主 GAUC 口径采用 impression-weighted GAUC。
+
+```text
+GAUC = sum(user_auc * user_impressions) / sum(user_impressions)
+```
+
+only-positive / only-negative user 跳过。任何 GAUC 输出必须同时报告：
+
+- valid GAUC user count
+- total user count
+- valid GAUC row count
+- total row count
+- row coverage rate
+
+原因：
+
+- Tenrec split 后存在大量单类用户，直接对每个 user 调 AUC 会报错。
+- 跳过单类用户后，GAUC 覆盖率不足 100%；不报告 coverage 会误导结果解释。
+
+状态：已实现于 `src/tenrec/metrics.py`，并通过 known-answer 单元测试。
+
+## 2026-05-27 - torch LR 必须是标量查表线性模型
+
+决策：torch LR baseline 使用每个 categorical field 的 `[vocab_size, 1]` scalar lookup，所有 field lookup 结果求和后加全局 bias。
+
+原因：
+
+- LR 是 ID 特征上的线性模型，不应使用 `embedding_dim=16` 这类 dense embedding。
+- 如果 LR 使用多维 embedding 再接网络层，模型语义会变成浅层神经网络，面试和实验对比都不清楚。
+
+状态：已实现于 `src/tenrec/models.py` 的 `FieldWiseLogisticRegression`，并由 `tests/test_torch_models.py` 验证 embedding dim 为 1。
+
+## 2026-05-27 - CTR baseline 不做 class reweighting 或重采样
+
+决策：LR / MLP smoke 使用普通 `BCEWithLogitsLoss`，不使用 `pos_weight`、class reweighting 或正负样本重采样。
+
+原因：
+
+- CTR 的 LogLoss 需要概率校准。
+- 类别重加权或重采样会改变训练目标，使 LogLoss 难以解释。
+- 当前 click positive rate 约 24%，不需要为了 smoke 阶段强行 reweight。
+
+状态：已实现于 `src/tenrec/training.py`，run summary 记录 `class_reweighting=false` 和 `resampling=false`。
+
+## 2026-05-27 - 训练前使用物化 shuffle 文件，不依赖小 shuffle buffer
+
+决策：torch train smoke 不使用小 `shuffle_buffer_size` 在 user-ordered CSV 上做局部混洗。训练前生成 deterministic hash-bucket shuffled train CSV。
+
+原因：
+
+- 物化 train 文件按 user 排列，同一 user 样本会聚簇。
+- 小 buffer 只能打散局部窗口，full run 可能导致 batch 梯度高度相关。
+- hash-bucket shuffle 会把全文件样本按 deterministic hash 分散到 bucket，再对 bucket 和 bucket 内 rows 打乱，避免按 user 连续喂给 SGD。
+
+状态：已实现于 `src/tenrec/torch_data.py`，本地生成：
+
+```text
+outputs/preprocessed/ctr-454e7ccb12f7/materialized/train_shuffled_seed20260525_b16.csv
+```
+
+## 2026-05-27 - metadata path 必须支持 CLI 覆盖
+
+决策：`scripts/train.py` 支持 `--metadata` 覆盖 config 中的 `data.metadata_path`。
+
+原因：
+
+- `metadata_path` 指向 `outputs/preprocessed/{run_id}/metadata.json`，而 `run_id` 由输入文件、config 和版本生成。
+- 服务器 full preprocessing 会产生不同 run_id，不能写死本地 smoke run。
+- 服务器流程必须是先 preprocessing，读取新 metadata path，再传给 train。
+
+状态：已实现于 `scripts/train.py`。

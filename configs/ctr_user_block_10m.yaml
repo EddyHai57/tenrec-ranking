@@ -1,0 +1,44 @@
+input_path: data/samples/ctr_user_block_10m_seed20260525.csv
+output_root: outputs/preprocessed
+
+label_column: click
+group_column: user_id
+
+features:
+  categorical:
+    - user_id
+    - item_id
+    - video_category
+    - gender
+    - age
+
+missing_values:
+  user_id:
+    - ""
+    - "\\N"
+  item_id:
+    - ""
+    - "\\N"
+  video_category:
+    - ""
+    - "\\N"
+  gender:
+    - ""
+    - "\\N"
+  age:
+    - ""
+    - "\\N"
+
+split:
+  train_ratio: 0.8
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  deterministic_user_order: true
+  shuffle: false
+  deduplicate: false
+  seed_used_by_split: false
+
+smoke:
+  batch_size: 32
+  sample_seed: 20260525
+  target_rows: 10000000

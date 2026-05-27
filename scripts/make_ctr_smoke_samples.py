@@ -248,15 +248,24 @@ def write_reports(summary, output_dir):
     return summary_path, report_path
 
 
-def make_samples(input_path, sample_dir, output_dir, tiny_rows, target_rows, seed):
+def make_samples(
+    input_path,
+    sample_dir,
+    output_dir,
+    tiny_rows,
+    target_rows,
+    seed,
+    tiny_sample_name=TINY_SAMPLE_NAME,
+    user_block_sample_name=USER_BLOCK_SAMPLE_NAME,
+):
     input_path = Path(input_path)
     sample_dir = Path(sample_dir)
     output_dir = Path(output_dir)
     sample_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    tiny_path = sample_dir / TINY_SAMPLE_NAME
-    user_block_path = sample_dir / USER_BLOCK_SAMPLE_NAME
+    tiny_path = sample_dir / tiny_sample_name
+    user_block_path = sample_dir / user_block_sample_name
 
     first = first_pass(input_path, tiny_path, tiny_rows)
     selected_user_ids, selected_blocks, selected_rows, selected_click_counts = choose_user_blocks(
@@ -290,7 +299,7 @@ def make_samples(input_path, sample_dir, output_dir, tiny_rows, target_rows, see
         },
         "samples": {
             "tiny_head": {
-                "name": TINY_SAMPLE_NAME,
+                "name": tiny_sample_name,
                 "output_path": str(tiny_path),
                 "requested_rows": tiny_rows,
                 "actual_rows": first["tiny"]["actual_rows"],
@@ -305,7 +314,7 @@ def make_samples(input_path, sample_dir, output_dir, tiny_rows, target_rows, see
                 "not_for": "正式实验结果或模型指标。",
             },
             "user_block": {
-                "name": USER_BLOCK_SAMPLE_NAME,
+                "name": user_block_sample_name,
                 "output_path": str(user_block_path),
                 "target_rows": target_rows,
                 "actual_rows": second["actual_rows"],
@@ -335,6 +344,8 @@ def parse_args():
     parser.add_argument("--tiny-rows", type=int, default=100_000)
     parser.add_argument("--target-rows", type=int, default=1_000_000)
     parser.add_argument("--seed", type=int, default=20260525)
+    parser.add_argument("--tiny-sample-name", default=TINY_SAMPLE_NAME)
+    parser.add_argument("--user-block-sample-name", default=USER_BLOCK_SAMPLE_NAME)
     return parser.parse_args()
 
 
@@ -347,6 +358,8 @@ def main():
         tiny_rows=args.tiny_rows,
         target_rows=args.target_rows,
         seed=args.seed,
+        tiny_sample_name=args.tiny_sample_name,
+        user_block_sample_name=args.user_block_sample_name,
     )
     print(f"Wrote {summary['samples']['tiny_head']['output_path']}")
     print(f"Wrote {summary['samples']['user_block']['output_path']}")

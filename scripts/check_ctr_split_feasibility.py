@@ -1,8 +1,13 @@
 import argparse
 import csv
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from tenrec.data import split_names_for_user
 
 
 SPLITS = ["train", "valid", "test"]
@@ -33,22 +38,6 @@ def empty_split_stats():
         "age": Counter(),
         "missing_video_category": 0,
     }
-
-
-def split_indices(row_count):
-    if row_count < 3:
-        return ["train"] * row_count
-    valid_count = max(1, int(row_count * 0.1))
-    test_count = max(1, int(row_count * 0.1))
-    train_count = row_count - valid_count - test_count
-    if train_count < 1:
-        train_count = 1
-        overflow = train_count + valid_count + test_count - row_count
-        if test_count >= valid_count and test_count > 1:
-            test_count -= overflow
-        elif valid_count > 1:
-            valid_count -= overflow
-    return ["train"] * train_count + ["valid"] * valid_count + ["test"] * test_count
 
 
 def rate(numerator, denominator):
@@ -145,7 +134,7 @@ def summarize_gauc(gauc_states):
 
 
 def process_user_block(rows, indexes, split_stats, gauc_states, short_user_counts):
-    assignments = split_indices(len(rows))
+    assignments = split_names_for_user(len(rows))
     short_user_counts[str(len(rows)) if len(rows) < 3 else ">=3"] += 1
     for row, split in zip(rows, assignments):
         update_split_stats(split_stats[split], row, indexes)
