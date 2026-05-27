@@ -231,3 +231,160 @@ outputs/preprocessed/ctr-454e7ccb12f7/materialized/train_shuffled_seed20260525_b
 - 服务器流程必须是先 preprocessing，读取新 metadata path，再传给 train。
 
 状态：已实现于 `scripts/train.py`。
+
+## 2026-05-27 - 保留 strict protocol 为主线，官方 CTR 协议作为对照
+
+决策：本项目主线继续使用 strict auditable protocol，不改成官方 CTR benchmark 的默认协议。后续可增加 official-compatible reproduction protocol 作为对照实验。
+
+strict protocol：
+
+```text
+不做负采样
+user 内文件顺序 split
+train-only vocab
+valid/test unseen 映射 OOV
+AUC / GAUC / LogLoss
+GAUC 必须报告 coverage
+```
+
+official-compatible reproduction protocol：
+
+```text
+按官方 1:2 negative sampling
+复现官方随机切分和全量 LabelEncoder 口径
+标注为 official-compatible，不与 strict protocol 指标直接比较
+```
+
+原因：
+
+- 论文 CTR 任务使用 `QK-video-1M`，保留全部正样本并按 positive:negative = 1:2 采样负样本。
+- 官方 `utils.py` 的 `ctrdataset()` 对全量 df 做 `LabelEncoder().fit_transform()`，再使用 `train_test_split(df, test_size=0.1)`。
+- 官方协议适合 benchmark 复现，但会改变 click base rate，并且全量编码不符合本项目 train-only vocab 的泄漏控制原则。
+- 本项目目标是可审计实验工程，不是单纯复刻官方表格分数。
+
+边界：
+
+- 不因为官方代码使用随机 split，就改掉本项目主协议。
+- 不因为官方代码使用全量 encoder，就放弃 train-only vocab。
+- 不因为官方代码使用 `hist_1..hist_10`，就立即把 history 加进 MVP baseline。
+- 官方 AUC / LogLoss 不能直接与本项目 strict protocol 指标比较。
+
+状态：已接受为方向性决策。是否实现 official-compatible protocol，等待 Eddy 和 Opus 讨论后决定。
+
+## 2026-05-27 - 多任务学习作为 Phase C 拔高方向
+
+决策：将多任务学习（MTL / Multi-task Learning）记录为后期拔高方向，但不进入当前 MVP 阻塞项。
+
+定位：
+
+```text
+Phase A: 单任务 CTR 主线稳定
+Phase B: 特征交互 + history / user interest 完成
+Phase C: 多任务学习拔高
+```
+
+前置条件：
+
+- 单任务 click prediction pipeline 在 strict protocol 下稳定。
+- LR / MLP / DeepFM / DCN-v2 至少完成可复现实验。
+- Phase B 的特征和 `hist_*` 使用口径完成审计。
+- 多任务 label 分布、loss 权重和 per-task metric 方差完成验证。
+
+MTL 架构边界：
+
+- 使用共享底座（shared backbone / shared experts）+ 多任务 head。
+- 不是多个任务各自一个完整模型并联，也不是双塔（Two-Tower）召回结构。
+- 多任务 head 只预测 Tenrec 当前存在的行为标签。
+
+Tenrec 当前任务边界：
+
+```text
+click
+like
+share
+follow
+```
+
+Tenrec 当前没有购买行为，不写 purchase / conversion / CVR 作为已存在任务。
+
+基于 `ctr_data_1M.csv` 全量流式 inspection 的正例分布：
+
+| task | positive rows | total rows | positive rate |
+| --- | ---: | ---: | ---: |
+| click | 28,880,860 | 120,342,306 | ~24.0% |
+| like | 2,275,417 | 120,342,306 | ~1.9% |
+| share | 250,089 | 120,342,306 | ~0.2% |
+| follow | 179,788 | 120,342,306 | ~0.15% |
+
+风险：
+
+- `share` 和 `follow` 极稀疏。
+- per-task AUC / GAUC / LogLoss 可能高方差，尤其在小样本和 user-level split 下。
+- 需要报告每个任务的有效样本数、正例数、GAUC coverage 和置信解释，不能只报平均指标。
+
+候选推进顺序：
+
+### C1 Shared-Bottom
+
+共享一套底层 embedding / MLP 表征，每个任务接独立 head。
+
+解决的问题：
+
+- 建立最小 MTL baseline。
+- 验证 click / like / share / follow 是否能共享表示。
+- 作为 MMOE / PLE 的对照。
+
+主要风险：
+
+- 所有任务强制共享底座，容易发生任务冲突（task conflict）和负迁移（negative transfer）。
+
+### C2 MMOE
+
+使用多个 experts 和 task-specific gates，为不同任务动态组合 expert 输出。
+
+解决的问题：
+
+- 缓解 Shared-Bottom 中不同任务梯度方向冲突的问题。
+- 允许 click、like、share、follow 对共享专家有不同依赖。
+
+主要风险：
+
+- 极稀疏任务的 gate 学习不稳定。
+- 需要观察每个任务的 loss 曲线和 gate 行为，避免只优化 click。
+
+### C3 PLE
+
+使用 shared experts 和 task-specific experts，并分层建模。
+
+解决的问题：
+
+- 缓解 MMOE 中任务间干扰仍然较强的问题。
+- 针对多任务学习中的跷跷板现象（seesaw phenomenon）：一个任务提升时另一个任务下降。
+- 更适合 Tenrec 这种 click 高频、share/follow 极低频的多行为任务结构。
+
+主要风险：
+
+- 架构复杂度和调参成本明显高于 Shared-Bottom / MMOE。
+- 必须先有稳定单任务和 MMOE 对照，否则无法解释收益来源。
+
+### C4 ESMM
+
+ESMM 原始目标是处理 CTR/CVR 场景中的样本选择偏差（sample selection bias）和稀疏反馈问题。
+
+Tenrec 边界：
+
+- Tenrec 当前没有 purchase / conversion label。
+- 不把 ESMM 写成购买转化模型。
+- 若后续使用，只能作为 click -> like / share / follow 这种曝光到互动链路的条件行为建模候选。
+
+解决的问题：
+
+- 尝试建模“曝光后点击”和“点击后进一步互动”的链式关系。
+- 在 like/share/follow 极稀疏时，探索是否能缓解稀疏标签和样本选择偏差。
+
+主要风险：
+
+- Tenrec 行为链路是否满足 ESMM 假设需要单独验证。
+- 如果行为之间不是严格 funnel，ESMM 可能不适合，应降级为 MMOE / PLE。
+
+状态：已确认作为 Phase C 计划方向，尚未实现，不能写成项目成果或简历已完成内容。

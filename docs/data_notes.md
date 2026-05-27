@@ -112,6 +112,48 @@ D:\ANU\project\tenrec-ranking\data\Tenrec
 - 是否能稳定构造用户历史序列；
 - 官方预处理 CTR 文件是否保留时间顺序。
 
+## 论文与官方 CTR benchmark 协议
+
+日期：2026-05-27
+
+来源：
+
+- Paper: `Tenrec: A Large-scale Multipurpose Benchmark Dataset for Recommender Systems`
+- Official GitHub: https://github.com/yuangh-x/2022-NIPS-Tenrec
+- Official CTR code: https://github.com/yuangh-x/2022-NIPS-Tenrec/blob/master/utils.py
+
+论文 3.1 CTR Prediction 说明：
+
+- CTR task 使用 sampling version of QK-video dataset，即 `QK-video-1M`。
+- 官方保留全部 positive feedback。
+- 官方按 positive:negative = 1:2 抽取 true negative feedback。
+- 官方得到约 86,642,580 interactions。
+- 官方使用 8:1:1 train / validation / test split。
+- 官方 CTR 特征包含 `user_id`、`item_id`、`gender`、`age`、`video_category` 和 user's past 10 clicked items。
+
+官方 `utils.py` 的 `ctrdataset()` 代码显示：
+
+- 读取字段包含 `user_id`、`item_id`、`click`、`video_category`、`gender`、`age`、`hist_1` 到 `hist_10`。
+- 调用 `sample_data(df)` 进行负采样。
+- 对 `click` 和所有 sparse features 使用 `LabelEncoder().fit_transform()`。
+- 使用 `train_test_split(df, test_size=0.1)` 生成 train / test。
+
+官方 `sample_data()` 代码显示：
+
+- `click == 1` 的正样本全部保留。
+- 从 `click == 0` 中采样 `2 * positive_count` 条负样本。
+- 采样后进行全局 shuffle。
+
+对本项目数据契约的影响：
+
+- 官方协议和本项目 MVP strict protocol 不同，指标不能直接比较。
+- 官方 1:2 negative sampling 会改变 click base rate 和 LogLoss calibration。
+- 官方全量 `LabelEncoder` 更适合复现官方 benchmark，不符合本项目 train-only vocab 纪律。
+- 官方使用 `hist_1..hist_10` 说明这些字段是 Tenrec CTR task 的一部分，但本项目使用前仍需做 history audit。
+- 本项目主协议继续保留：不负采样、user-order split、train-only vocab、AUC/GAUC/LogLoss。
+
+后续可增加 official-compatible reproduction protocol，用于对照官方 benchmark，但必须明确标注其采样、split 和编码口径。
+
 ## 本地文件清单
 
 只读文件清单，未做全表扫描：

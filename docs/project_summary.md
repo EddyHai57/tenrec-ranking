@@ -43,6 +43,7 @@
 - G1 生成 10,000,035 行完整 user-block 样本，并完成两遍流式预处理：run_id `ctr-1961cdee479f`，peak RSS 136.68 MiB，Pass1 38.223s，Pass2 71.914s。
 - G1 1M 对照 peak RSS 为 54.77 MiB；10M 行数约 10 倍但 RSS 未接近 10 倍增长，暂未发现整文件 load 或按行数线性爆内存问题。
 - G2 复跑 MLP train smoke 并记录 train/valid AUC：epoch 5 train AUC 0.6758640335529477，valid AUC 0.5641194888327414；未发现 embedding / forward / backward 硬 bug，但 MLP smoke 仍不能作为正式模型结论。
+- 已完成 Tenrec 论文与官方 CTR benchmark 初步审阅，并记录到 `docs/paper_review.md`：官方协议使用 1:2 negative sampling、随机切分 / 全量编码口径；本项目主线继续保持 strict auditable protocol。
 
 ## 尚未验证
 
@@ -51,3 +52,4 @@
 - 尚未在 full data 上验证最终 split 方案和正式指标。
 - 尚未在服务器上验证 Python / CUDA / Torch 环境。
 - 尚未在 full 120M 数据上验证预处理 RSS 和训练耗时。
+- 尚未实现 official-compatible reproduction protocol；是否加入下一阶段等待 Eddy 和 Opus 讨论后决定。
