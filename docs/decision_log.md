@@ -501,3 +501,21 @@ static hist user rate: 100.0000000000%
 结论：full `ctr_data_1M.csv` 上 static hist user rate 仍为 100%。DIN 按“static hist snapshot + target-dependent attention”语义推进；DIEN 不进入当前路线图。
 
 状态：已接受为 Phase B 路线图调整。
+
+## 2026-05-29 - DIN full 结果支持“特征空间 > 模型复杂度”
+
+决策：Phase B DIN multi-seed full 结果接受为进入 Phase C 的证据；下一阶段必须优先做 dual-protocol 对照和低泄漏统计特征设计，而不是继续单纯堆叠更复杂模型。
+
+原因：
+
+- strict Phase A 中 DeepFM -> DCN-v2 的 AUC 差距处于 seed 噪声内，说明在 5 个 ID/profile 特征上继续增加交叉网络复杂度收益有限。
+- DIN 引入 `hist_item` 后，AUC / GAUC / LogLoss 均稳定优于 4 模型 strict baseline，且 DCN-v2 -> DIN 的差距明显在噪声外。
+- 当前提升来自特征空间加入 static history snapshot 和 target-dependent attention，而不是 DIEN 式动态兴趣演化；因此后续叙事必须继续保持 DIN 语义边界。
+
+后续约束：
+
+- Phase C 需要把 strict mainline、同数据契约下的 hist ablation、official-compatible reproduction 分开，不混写结论。
+- Phase D 统计特征必须先通过泄漏风险审查，再进入 full run。
+- `project_summary.md` 只写高层工程事实，不写具体 AUC / GAUC / LogLoss 数字。
+
+状态：已接受为 Phase C / Phase D 方向约束。

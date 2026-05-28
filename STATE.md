@@ -4,7 +4,7 @@
 
 ## 1. 当前阶段
 
-Phase B 本地 DIN 审核阶段：strict Phase A baseline 已完成，`hist_1..hist_10` 已接入 DIN 本地模型与 CPU smoke，等待 Eddy review 后再 commit / push / 上服务器。
+Phase B 完成；进入 Phase C dual-protocol 对照设计。DIN 已在 full hist 数据上完成 strict multi-seed 验证，下一阶段需要拆分 strict mainline、hist ablation 和 official-compatible reproduction。
 
 ## 2. 最近完成
 
@@ -14,14 +14,15 @@ Phase B 本地 DIN 审核阶段：strict Phase A baseline 已完成，`hist_1..h
 - 2026-05-28：确认 full `ctr_data_1M.csv` 中 `hist_*` 是 user 级静态快照；DIEN 已移出当前路线图，见 `docs/data_notes.md`、`docs/decision_log.md`。
 - 2026-05-28：完成 full hist preprocessing，DIN 使用新 run `ctr-972e0dcb2b8d`；产物在 ignored `outputs/preprocessed/`。
 - 2026-05-29：完成 DIN 本地实现、focused tests、overfit gate 和 1M hist CPU smoke；完整记录见 `docs/experiment_log.md`。
+- 2026-05-29：完成 DIN strict FULL 3 seeds 服务器训练和 test 评估；完整指标见 `docs/experiment_log.md`。
 
 ## 3. 下一步
 
-1. Eddy review DIN 实现、focused tests、overfit gate 和 1M CPU smoke 结果。
-2. Eddy 批准后，按本地流程 stage / commit / push；commit message 默认中文，type 保留英文 conventional 前缀。
-3. 服务器 read-only pull 最新代码，不从服务器 push。
-4. 确认 `ctr-972e0dcb2b8d` 已在服务器可用并生成 Linux 路径版 `metadata_server.json`。
-5. 服务器只跑 DIN GPU sanity 和单 seed full，不直接 multi-seed。
+1. 记录并提交 DIN multi-seed full 结果，保持 `project_summary.md` 不写具体指标数字。
+2. 设计 Phase C dual-protocol：strict 主线、hist ablation、official-compatible reproduction 分开记录。
+3. 明确同数据契约下的 DIN ablation：no-hist / shuffled-hist / target-attention 等对照。
+4. 决定 Phase D 统计特征范围，优先验证能解释“特征空间 > 模型复杂度”的低泄漏特征。
+5. 服务器继续只做 pull 和训练，不在服务器修改源码或文档。
 
 ## 4. 活跃约束
 

@@ -1275,3 +1275,91 @@ deep_params: 66,049
 - 尚未使用 full DIN 数据 `ctr-972e0dcb2b8d`。
 - 尚未做服务器 GPU sanity 或 full single seed。
 - 由于 `hist_*` 是 user-level static snapshot，DIN 只能解释为 static history 上的 target-dependent attention，不能写成 DIEN 或动态兴趣演化。
+
+## 2026-05-29 — DIN multi-seed strict FULL (3 seeds × 1 model)
+
+类型：`full validation / multi-seed training / history model`
+
+目的：
+
+- 在 full hist preprocessing run 上验证 DIN 的正式 strict FULL 表现。
+- 检查 static user-level hist snapshot + target-dependent attention 是否能在 strict protocol 下稳定优于 5 特征 baseline。
+- 与 LR / MLP / DeepFM / DCN-v2 strict FULL 3 seeds 结果并排比较。
+
+设置：
+
+```text
+model: DIN
+metadata_run_id: ctr-972e0dcb2b8d
+data: full hist materialized data
+loader: tensor
+device: cuda
+batch_size: 8192
+epochs: 10
+early_stop patience: 3
+checkpoint metric: valid LogLoss
+eval_test: true
+strict protocol: user-order split, train-only vocab, no negative sampling, no class reweighting
+```
+
+服务器前置验证：
+
+```text
+GitHub -> server pull: HEAD e52d5e5
+server unittest: Ran 28 tests OK
+GPU overfit seed 20260525: initial_loss 0.9219812154769897, final_loss 0.0, passed true
+hash-bucket shuffled train: train_shuffled_seed20260525_b64.csv, 7.3G
+```
+
+Run 明细：
+
+| seed | run_id | best_epoch | epochs_ran | test AUC | test GAUC | coverage | test LogLoss | epoch wall-clock |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 20260525 | `20260529-012051-din_full_s20260525-din` | 1 | 4 | 0.7772673013 | 0.7193121416 | 0.8141143988 | 0.4356378138 | 920.3s |
+| 42 | `20260529-013834-din_full_s42-din` | 1 | 4 | 0.7779886678 | 0.7191216327 | 0.8141143988 | 0.4335890689 | 928.6s |
+| 2026 | `20260529-015624-din_full_s2026-din` | 1 | 4 | 0.7776684262 | 0.7193915396 | 0.8141143988 | 0.4343851638 | 913.9s |
+
+Mean ± std：
+
+| model | seeds | best_epoch | test AUC | test GAUC | coverage | test LogLoss |
+|---|---:|---|---:|---:|---:|---:|
+| DIN | 3 | 1, 1, 1 | 0.7776414651 ± 0.0003614382 | 0.7192751046 ± 0.0001387128 | 0.8141143988 ± 0.0000000000 | 0.4345373488 ± 0.0010328161 |
+
+DIN vs strict baseline：
+
+| model | data/protocol | best_epoch | test AUC | test GAUC | test LogLoss |
+|---|---|---|---:|---:|---:|
+| LR | `ctr-3999a64f6fad` strict | 1, 1, 1 | 0.7635861517 ± 0.0001863881 | 0.7158774416 ± 0.0000643243 | 0.4524243393 ± 0.0003682996 |
+| MLP | `ctr-3999a64f6fad` strict | 6, 4, 4 | 0.7704833123 ± 0.0005001048 | 0.7177477695 ± 0.0005550239 | 0.4413799405 ± 0.0008856960 |
+| DeepFM | `ctr-3999a64f6fad` strict | 1, 1, 2 | 0.7729093563 ± 0.0011252317 | 0.7171410364 ± 0.0002022186 | 0.4381637490 ± 0.0008054564 |
+| DCN-v2 | `ctr-3999a64f6fad` strict | 1, 1, 1 | 0.7732912827 ± 0.0000832072 | 0.7174135194 ± 0.0001828495 | 0.4367884263 ± 0.0002341764 |
+| DIN | `ctr-972e0dcb2b8d` full hist | 1, 1, 1 | 0.7776414651 ± 0.0003614382 | 0.7192751046 ± 0.0001387128 | 0.4345373488 ± 0.0010328161 |
+
+关键观察：
+
+- DIN test AUC 为 0.7776 ± 0.0004，相对 DCN-v2 提升约 0.43pp；按两者 seed std 合成计算约 11.7σ，量级约 10σ，明显在噪声外。
+- DIN 同时在 GAUC 和 LogLoss 上取得当前最优，说明改进不只是全局 ranking AUC，用户内排序和校准也同步改善。
+- best_epoch=1,1,1，与 LR / DeepFM / DCN-v2 等模型的早停模式一致；static hist 信号在 epoch 1 已基本被吸收，继续训练会使 valid LogLoss 变差。
+- DeepFM -> DCN-v2 的 AUC 均值差约 0.04pp，处于噪声内；DCN-v2 -> DIN 的差距约为前者 10 倍，支持当前阶段“特征空间 > 模型复杂度”的判断。
+
+已知限制：
+
+- 当前 `hist_1..hist_10` 是 static user-level history snapshot，不是 per-impression rolling history 或动态兴趣演化序列。
+- 当前 DIN 只使用单条 `hist_item` 序列，没有引入多行为序列、时间间隔、行为类型或位置特征。
+- 当前未做 DIN 超参调优；embedding 维度、attention/deep MLP、dropout、lr、batch size 均沿用保守配置。
+- 当前模型输入仍只有 5 个 ID/profile 特征加 `hist_item`，尚未加入统计特征、item 侧内容特征或官方协议兼容特征。
+- DIN 与 strict baseline 使用不同 preprocessing run：baseline 为无 hist 的 `ctr-3999a64f6fad`，DIN 为 hist run `ctr-972e0dcb2b8d`；该表用于阶段性对照，不等价于同一数据契约下的消融实验。
+
+输出路径：
+
+```text
+outputs/runs/20260529-012051-din_full_s20260525-din/
+outputs/runs/20260529-013834-din_full_s42-din/
+outputs/runs/20260529-015624-din_full_s2026-din/
+outputs/runs/din_multiseed_summary.md
+```
+
+结论：
+
+- DIN strict FULL 3 seeds 已完成，AUC / GAUC / LogLoss 均稳定优于当前 4 模型 strict baseline。
+- 当前证据支持 Phase B 完成，并进入 Phase C dual-protocol 对照设计：区分 strict mainline、hist ablation 和 official-compatible reproduction protocol。
