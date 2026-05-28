@@ -931,3 +931,90 @@ summary: /root/autodl-tmp/tenrec-ranking-multiseed/outputs/runs/multi_seed_summa
 - 未构造统计特征或用户兴趣特征。
 - 未做系统超参调优。
 - 这批 run 用于确认 strict baseline 稳定性，不代表模型能力上限。
+
+## 2026-05-28 — hist leakage gate check
+
+类型：`schema inspection / leakage diagnostic`
+
+目的：
+
+- 验证 `hist_1..hist_10` 在当前 strict user-order split 下，是否会把 train 行历史直接泄漏到同 user 后续 valid/test target item。
+- 为后续 DIN / DIEN 历史序列建模提供前置闸门证据。
+
+设置：
+
+```text
+input: data/Tenrec/ctr_data_1M.csv
+script: scripts/check_hist_leakage.py
+split logic: src/tenrec/data.py::split_counts_for_user
+scan rows: 120,342,306
+user blocks: 999,447
+elapsed: 644.697s
+output:
+  outputs/inspection/hist_leakage_check.json
+  outputs/inspection/hist_leakage_check.md
+```
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\check_hist_leakage.py --input data\Tenrec\ctr_data_1M.csv --output-dir outputs\inspection --hist-sample-size 1000000 --progress-every-rows 5000000
+```
+
+闸门判定标准：
+
+| decision | criteria |
+| --- | --- |
+| PASS | mean overlap_rate < 1% 且 p99 < 5% |
+| MARGINAL | mean overlap_rate 1-5% 或 p99 5-10% |
+| FAIL | mean overlap_rate > 5% 或 p99 > 10% |
+
+### Check 1: train hist vs future valid/test target overlap
+
+定义：
+
+- `train_hist_set`：同一 user 的 train 行 `hist_1..hist_10` 非 padding 取值并集。
+- `valid_target_set` / `test_target_set`：同一 user valid/test 行的 target `item_id` 集合。
+- `overlap_rate = |train_hist_set ∩ target_set| / |target_set|`。
+
+结果：
+
+| split | users | mean | median | p90 | p99 | max | users >5% | users >10% | global overlap items | global target items | global overlap rate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| valid | 997,465 | 0.000000% | 0.000000% | 0.000000% | 0.000000% | 0.000000% | 0 (0.000000%) | 0 (0.000000%) | 0 | 11,592,392 | 0.000000% |
+| test | 997,465 | 0.000000% | 0.000000% | 0.000000% | 0.000000% | 0.000000% | 0 (0.000000%) | 0 (0.000000%) | 0 | 11,595,534 | 0.000000% |
+
+Combined valid+test：
+
+```text
+global overlap items: 0
+global target items: 23,187,926
+global overlap rate: 0.000000%
+```
+
+### Check 2: hist sample vs full item universe
+
+结果：
+
+| item | value |
+| --- | ---: |
+| full-file unique `item_id` count | 2,310,087 |
+| non-padding hist values seen | 1,194,878,527 |
+| hist sample method | first non-padding values in file order |
+| hist sample size | 1,000,000 |
+| hist sample in item universe | 987,324 |
+| hist sample in item universe rate | 98.732400% |
+| hist sample outside item universe | 12,676 |
+| hist sample outside item universe rate | 1.267600% |
+
+结论：
+
+- 闸门判定：PASS。
+- 在当前 strict user-order split 下，没有发现 train hist 直接包含同 user 后续 valid/test target item 的泄漏。
+- `hist_*` 具备进入 DIN / DIEN 序列建模的前置条件；DIN 可以共享 item embedding，但所有不在 train-only item vocab 的 hist item 仍必须映射 OOV。
+
+已知限制：
+
+- 该检查不能证明 Tenrec 原始 `hist_*` 构造严格时间正确；原始构造仍可能依赖 QK-video raw superset 或论文预处理逻辑。
+- 该检查只证明当前 strict split 下无 train -> valid/test 直接 target overlap，不能替代对 DIN 数据管道中 train-only vocab、padding、OOV 和 sequence mask 的实现审计。
+- Check 2 使用 file-order 前 1,000,000 个非 padding hist 取值，不是随机 reservoir sample；结果用于理解 hist item universe 覆盖，不用于模型指标。

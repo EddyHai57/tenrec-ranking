@@ -46,10 +46,11 @@
 - 已完成 Tenrec 论文与官方 CTR benchmark 初步审阅，并记录到 `docs/paper_review.md`：官方协议使用 1:2 negative sampling、随机切分 / 全量编码口径；本项目主线继续保持 strict auditable protocol。
 - 完成 LR/MLP/DeepFM/DCN-v2 strict full 训练，test 指标记录见 `docs/experiment_log.md`；tensor loader 优化将单 epoch 训练时间从约 505s 降至约 103s，等价性数值完全一致。
 - 完成 strict full 多 seed 复跑（3 seeds × 4 models），LR→DCN-v2 AUC 阶梯统计稳定，多 seed 标准差小于 0.001；完整指标见 `docs/experiment_log.md`。
+- `hist_1..hist_10` 在 strict split 下完成泄漏闸门验证（PASS），具备进入 DIN 序列建模的前置条件。
 
 ## 尚未验证
 
-- 尚未验证 `hist_1` 到 `hist_10` 是否严格只使用 target event 之前的历史。
+- 尚未证明 Tenrec 原始 `hist_1` 到 `hist_10` 构造严格只使用 target event 之前的历史；当前只完成 strict split 下的 train hist -> valid/test target 直接 overlap 闸门验证。
 - 尚未做 full strict baseline 的系统性超参调优。
 - 尚未实现 Phase B 的历史序列 / 用户兴趣建模。
 - 尚未实现 official-compatible reproduction protocol；是否加入下一阶段等待 Eddy 和 Opus 讨论后决定。

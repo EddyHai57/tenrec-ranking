@@ -445,3 +445,28 @@ Tenrec 边界：
 - `project_summary.md` 只写高层工程事实，不嵌入具体 AUC 数字。
 
 状态：已接受为 strict Phase A baseline 报告口径。
+
+## 2026-05-28 - hist_1..hist_10 泄漏闸门 PASS，可进入 DIN/DIEN
+
+决策：`hist_1..hist_10` 在当前 strict user-order split 下通过泄漏闸门验证，可作为后续 DIN / DIEN 序列建模输入的前置条件。
+
+验证方法：
+
+- 新增 `scripts/check_hist_leakage.py`，对 `data/Tenrec/ctr_data_1M.csv` 全量 120,342,306 行做流式扫描。
+- 按 user block 处理，每个 block 使用 `src/tenrec/data.py` 中唯一 split 函数 `split_counts_for_user()`，不重写 split 逻辑。
+- Check 1 检查每个 user 的 train 行 `hist_1..hist_10` 并集是否包含该 user 后续 valid/test target `item_id`。
+- Check 2 抽取 1,000,000 个非 padding hist 取值，检查其是否存在于全文件 `item_id` universe。
+
+证据：
+
+- Check 1：valid / test 的 mean、p99、max overlap rate 全部为 0%。
+- Check 1：combined valid+test global overlap 为 `0 / 23,187,926` target items。
+- Check 2：full-file unique `item_id` 为 2,310,087；hist sample 中 987,324 / 1,000,000 个取值在该 universe 内，覆盖率 98.7324%。
+- 相对 full file item universe，约 1.2676% hist sample 取值不在 `item_id` universe 内，后续 DIN 编码时必须走 OOV。
+
+限制：
+
+- 该检查不能证明 Tenrec 原始 `hist_*` 构造严格时间正确；它只能证明在本项目当前 strict user-order split 下，train hist 没有直接包含同 user 后续 valid/test target item。
+- Check 2 的 98.7324% 是相对 full file item universe 的 sample coverage，不等价于 train-only vocab coverage；正式 DIN 数据管道仍必须使用 train-only item vocab，train 未见 hist item 也映射 OOV。
+
+状态：已接受为 Phase B history / DIN 前置闸门。DIN/DIEN 实现仍需复用 strict split、train-only vocab 和 OOV/missing 规则。
