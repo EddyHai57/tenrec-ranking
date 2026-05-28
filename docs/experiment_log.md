@@ -727,3 +727,138 @@ G1 memory comparison：
 - valid/test `user_id` OOV 均为 0，符合 user 内顺序 split 不变量。
 - full valid/test `item_id` OOV 率约 0.87% / 0.89%，低于 10M 的约 4.8% / 5.0%，符合训练覆盖度增加后 OOV 压力下降的预期。
 - 本 run 只是 full preprocessing 产物，不包含模型训练指标。
+
+## 2026-05-28 — strict FULL baseline (LR/MLP/DeepFM/DCN-v2)
+
+类型：`full training / strict protocol`
+
+环境：
+
+```text
+server: tenrec-seetacloud
+GPU: NVIDIA GeForce RTX 4090 D
+git commit: 84c982d
+metadata: /root/autodl-tmp/datasets/tenrec-feed-ctr-data/ctr-3999a64f6fad/metadata_server.json
+loader: csv
+CSV train path: /root/autodl-tmp/datasets/tenrec-feed-ctr-data/ctr-3999a64f6fad/materialized/train_shuffled_seed20260525_b64.csv
+valid path: /root/autodl-tmp/datasets/tenrec-feed-ctr-data/ctr-3999a64f6fad/materialized/valid.csv
+test path: /root/autodl-tmp/datasets/tenrec-feed-ctr-data/ctr-3999a64f6fad/materialized/test.csv
+batch_size: 8192
+epochs: 8
+early stopping: valid LogLoss, patience 2
+test rows: 11,597,816
+```
+
+Tensor path 信息：
+
+- 本 full baseline 指标由旧 `csv` loader 产出，训练输入为 hash-bucket shuffled CSV。
+- 后续新增的 `data.loader: tensor` 主路径使用原始 `train.csv` 一次性载入 tensor，并以 `torch.randperm(..., device=cuda)` 做 epoch shuffle，不再依赖 b64 shuffled CSV。
+- `tensor` loader 已通过 LR / DeepFM 与 CSV loader 的数值等价对拍；因此后续 strict baseline 复跑优先使用 tensor loader，CSV loader 保留 fallback。
+
+结果：
+
+| model | run_id | loader | best epoch | epochs run | test rows | test AUC | test GAUC | GAUC coverage | test LogLoss | elapsed |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| LR | `20260528-031610-torch_lr_full-lr` | `csv` | 1 | 3 | 11,597,816 | 0.7636357356288804 | 0.7157871620632361 | 0.8141143987799082 | 0.451746746460835 | 1616s |
+| MLP | `20260528-034306-torch_mlp_full-mlp` | `csv` | 2 | 4 | 11,597,816 | 0.7671188364300502 | 0.7148046251846828 | 0.8141143987799082 | 0.4422375646061338 | 2390s |
+| DeepFM | `20260528-042256-deepfm_full-deepfm` | `csv` | 1 | 3 | 11,597,816 | 0.7724424879518308 | 0.7174145208043025 | 0.8141143987799082 | 0.4372318997954422 | 1925s |
+| DCN-v2 | `20260528-045501-dcnv2_full-dcnv2` | `csv` | 1 | 3 | 11,597,816 | 0.7734421573895136 | 0.7174782550001105 | 0.8141143987799082 | 0.43680224352809116 | 1837s |
+
+限制：
+
+- 单 seed：`20260525`，没有做多 seed 重复实验。
+- early stopping 很早触发：LR / DeepFM / DCN-v2 实际只跑 3 epoch，MLP 实际跑 4 epoch；best epoch 集中在 1-2。
+- 只使用 strict Phase A 的 5 个 ID/profile 特征：`user_id`、`item_id`、`video_category`、`gender`、`age`。
+- 未做超参调优。
+- 未使用 `hist_1..hist_10` 历史序列。
+- 未做特征工程或特征交互增强以外的 user interest 建模。
+- 本 run 使用旧 CSV dataloader，后续发现 GPU 利用率低，见 `issue_log.md` 的 dataloader performance issue；tensor loader 加速结果另见下一节。
+
+结论：
+
+- strict 协议下，LR 到 DCN-v2 的 test AUC 从 0.7636 到 0.7734，约提升 1 个百分点，验证 LR -> MLP -> DeepFM -> DCN-v2 baseline 阶梯方向正确。
+- 绝对差距较小主要受限于当前特征空间、单 seed、早停过早和未使用历史序列 / 特征工程；不能解释为 DeepFM 或 DCN-v2 模型本身“不行”。
+
+## 2026-05-28 — Tensor dataloader equivalence and LR performance demo
+
+类型：`implementation validation / performance smoke`
+
+目的：
+
+- 新增 `data.loader: tensor`，避免训练期间每 epoch 重复 Python CSV 逐行解析。
+- 验证新旧 dataloader 在相同 seed、相同样本顺序下不改变训练语义。
+- 在 LR FULL 1 epoch 上做轻量性能 demo。
+
+本地验证：
+
+```powershell
+.\.venv\Scripts\python.exe -m py_compile src\tenrec\torch_data.py src\tenrec\training.py scripts\train.py
+.\.venv\Scripts\python.exe -m unittest tests.test_data_contract tests.test_metrics tests.test_torch_models tests.test_training tests.test_torch_data
+```
+
+结果：
+
+```text
+Ran 20 tests
+OK
+```
+
+服务器等价性对拍设置：
+
+```text
+device: cuda
+metadata: ctr-3999a64f6fad/metadata_server.json
+max_train_rows: 100000
+max_valid_rows: 50000
+train_shuffle: none
+epochs: 2
+only difference: data.loader = csv vs tensor
+```
+
+LR 对拍：
+
+| epoch | csv train loss | tensor train loss | csv valid AUC | tensor valid AUC | csv valid GAUC | tensor valid GAUC | csv LogLoss | tensor LogLoss |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.6318812780380249 | 0.6318812780380249 | 0.5909480469165779 | 0.5909480469165779 | 0.5824200924216459 | 0.5824200924216459 | 0.5948254304188908 | 0.5948254304188908 |
+| 2 | 0.5744604323196412 | 0.5744604323196412 | 0.6116213666252145 | 0.6116213666252145 | 0.5946678858627868 | 0.5946678858627868 | 0.588292578654626 | 0.588292578654626 |
+
+DeepFM 对拍：
+
+| epoch | csv train loss | tensor train loss | csv valid AUC | tensor valid AUC | csv valid GAUC | tensor valid GAUC | csv LogLoss | tensor LogLoss |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.6751879526138306 | 0.6751879526138306 | 0.5502702944492442 | 0.5502702944492442 | 0.5636236642183162 | 0.5636236642183162 | 0.6496039477501342 | 0.6496039477501342 |
+| 2 | 0.6250755997657775 | 0.6250755997657775 | 0.5473344027790169 | 0.5473344027790169 | 0.5734421885685355 | 0.5734421885685355 | 0.6027031991052973 | 0.6027031991052973 |
+
+LR tensor FULL 1 epoch performance demo：
+
+```text
+run_id: 20260528-131845-perf_lr_tensor_full_1epoch-lr
+loader: tensor
+train_shuffle: gpu_randperm
+batch_size: 8192
+preload elapsed: 27.27977681159973s
+epoch 1 elapsed: 103.33020281791687s
+epoch 1 valid AUC: 0.7645604166577312
+epoch 1 valid GAUC: 0.7119516961953584
+epoch 1 valid LogLoss: 0.49619740976391186
+GAUC coverage: 0.8717421452452773
+peak GPU util: 16%
+average GPU util: 5.425373134328358%
+peak memory: 7405 MiB
+```
+
+对照旧 CSV LR FULL epoch 1：
+
+```text
+run_id: 20260528-031610-torch_lr_full-lr
+loader: csv
+epoch 1 elapsed: 505.3850977420807s
+GPU memory: ~495 MiB
+GPU util: ~2%
+```
+
+结论：
+
+- Tensor loader 在 LR / DeepFM 上通过数值等价对拍。
+- LR FULL epoch 1 从约 505s 降至约 103s，说明 CSV 重复解析瓶颈已被明显缓解。
+- GPU 仍未吃满，峰值 16%、平均约 5.4%。剩余瓶颈来自小模型、小 batch 下的大量 optimizer step 和 full valid metric 计算；继续优化需要单独审计 batch size / train loop / metric 计算，不能写成 dataloader 语义等价改动。

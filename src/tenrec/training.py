@@ -1,6 +1,7 @@
 import copy
 import json
 import math
+import os
 import random
 import subprocess
 import time
@@ -13,9 +14,12 @@ from torch import nn
 from tenrec.metrics import binary_auc, binary_log_loss, impression_weighted_gauc
 from tenrec.models import build_model
 from tenrec.torch_data import (
+    MaterializedTensorTable,
     ensure_shuffled_train,
     iter_materialized_batches,
+    iter_tensor_batches,
     load_first_batches,
+    load_materialized_tensor_table,
     load_metadata,
     raw_feature_columns,
     split_path,
@@ -68,6 +72,9 @@ def resolve_model_config(config: dict, metadata: dict) -> dict:
 
 
 def make_run_id(config: dict) -> str:
+    override = os.environ.get("TENREC_RUN_ID")
+    if override:
+        return override
     model_name = config["model"]["name"]
     run_name = config["run"]["name"]
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -80,16 +87,75 @@ def prepare_run_dir(config: dict, run_id: str) -> Path:
     return run_dir
 
 
-def train_one_epoch(model, criterion, optimizer, train_path, feature_columns, config, device):
-    model.train()
-    total_loss = 0.0
-    total_rows = 0
-    for batch in iter_materialized_batches(
-        path=train_path,
+def data_loader_name(config: dict) -> str:
+    loader = config["data"].get("loader", "csv")
+    if loader not in {"csv", "tensor"}:
+        raise ValueError(f"Unsupported data.loader: {loader}")
+    return loader
+
+
+def tensor_train_shuffle_enabled(config: dict) -> bool:
+    return config["data"].get("train_shuffle", "gpu_randperm") not in {
+        "none",
+        "sequential",
+        "false",
+    }
+
+
+def epoch_generator(seed: int, epoch: int, device: torch.device) -> torch.Generator:
+    generator = torch.Generator(device=device)
+    generator.manual_seed(seed + epoch)
+    return generator
+
+
+def iter_train_batches(train_data, feature_columns, config, device, epoch: int):
+    if isinstance(train_data, MaterializedTensorTable):
+        generator = None
+        if tensor_train_shuffle_enabled(config):
+            generator = epoch_generator(int(config["run"]["seed"]), epoch, device)
+        return iter_tensor_batches(
+            table=train_data,
+            batch_size=int(config["data"]["batch_size"]),
+            shuffle=generator is not None,
+            generator=generator,
+            max_rows=config["data"].get("max_train_rows"),
+        )
+    return iter_materialized_batches(
+        path=train_data,
         feature_columns=feature_columns,
         batch_size=int(config["data"]["batch_size"]),
         device=device,
         max_rows=config["data"].get("max_train_rows"),
+    )
+
+
+def iter_eval_batches(data, feature_columns, batch_size, max_rows, device):
+    if isinstance(data, MaterializedTensorTable):
+        return iter_tensor_batches(
+            table=data,
+            batch_size=batch_size,
+            shuffle=False,
+            max_rows=max_rows,
+        )
+    return iter_materialized_batches(
+        path=data,
+        feature_columns=feature_columns,
+        batch_size=batch_size,
+        device=device,
+        max_rows=max_rows,
+    )
+
+
+def train_one_epoch(model, criterion, optimizer, train_data, feature_columns, config, device, epoch: int):
+    model.train()
+    total_loss = 0.0
+    total_rows = 0
+    for batch in iter_train_batches(
+        train_data=train_data,
+        feature_columns=feature_columns,
+        config=config,
+        device=device,
+        epoch=epoch,
     ):
         labels = batch["labels"]
         logits = model(batch["features"])
@@ -106,7 +172,7 @@ def train_one_epoch(model, criterion, optimizer, train_path, feature_columns, co
 
 
 @torch.no_grad()
-def evaluate(model, valid_path, feature_columns, config, device):
+def evaluate(model, valid_data, feature_columns, config, device):
     model.eval()
     labels = []
     scores = []
@@ -114,12 +180,12 @@ def evaluate(model, valid_path, feature_columns, config, device):
     total_loss = 0.0
     total_rows = 0
     criterion = nn.BCEWithLogitsLoss()
-    for batch in iter_materialized_batches(
-        path=valid_path,
+    for batch in iter_eval_batches(
+        data=valid_data,
         feature_columns=feature_columns,
         batch_size=int(config["data"]["eval_batch_size"]),
-        device=device,
         max_rows=config["data"].get("max_valid_rows"),
+        device=device,
     ):
         logits = model(batch["features"])
         loss = criterion(logits, batch["labels"])
@@ -156,12 +222,12 @@ def evaluate_path(model, path, feature_columns, batch_size, max_rows, device):
     total_loss = 0.0
     total_rows = 0
     criterion = nn.BCEWithLogitsLoss()
-    for batch in iter_materialized_batches(
-        path=path,
+    for batch in iter_eval_batches(
+        data=path,
         feature_columns=feature_columns,
         batch_size=batch_size,
-        device=device,
         max_rows=max_rows,
+        device=device,
     ):
         logits = model(batch["features"])
         loss = criterion(logits, batch["labels"])
@@ -220,7 +286,8 @@ def run_training(config: dict) -> dict:
     run_id = make_run_id(config)
     run_dir = prepare_run_dir(config, run_id)
 
-    if config["data"].get("train_shuffle", "materialized") == "materialized":
+    loader = data_loader_name(config)
+    if loader == "csv" and config["data"].get("train_shuffle", "materialized") == "materialized":
         train_path = ensure_shuffled_train(
             metadata_path=metadata_path,
             seed=int(config["run"]["seed"]),
@@ -229,6 +296,24 @@ def run_training(config: dict) -> dict:
     else:
         train_path = split_path(metadata, "train")
     valid_path = split_path(metadata, "valid")
+    train_data = train_path
+    valid_data = valid_path
+    preload_elapsed_seconds = None
+    if loader == "tensor":
+        preload_started_at = time.time()
+        train_data = load_materialized_tensor_table(
+            path=train_path,
+            feature_columns=feature_columns,
+            device=device,
+            max_rows=config["data"].get("max_train_rows"),
+        )
+        valid_data = load_materialized_tensor_table(
+            path=valid_path,
+            feature_columns=feature_columns,
+            device=device,
+            max_rows=config["data"].get("max_valid_rows"),
+        )
+        preload_elapsed_seconds = time.time() - preload_started_at
 
     model_config = resolve_model_config(config, metadata)
     model = build_model(model_config, vocab_sizes, feature_columns).to(device)
@@ -247,26 +332,29 @@ def run_training(config: dict) -> dict:
     metric_mode = config["train"]["checkpoint_mode"]
     with metrics_path.open("w", encoding="utf-8", newline="\n") as handle:
         for epoch in range(1, int(config["train"]["epochs"]) + 1):
+            epoch_started_at = time.time()
             train_loss = train_one_epoch(
                 model=model,
                 criterion=criterion,
                 optimizer=optimizer,
-                train_path=train_path,
+                train_data=train_data,
                 feature_columns=feature_columns,
                 config=config,
                 device=device,
+                epoch=epoch,
             )
-            valid_metrics = evaluate(model, valid_path, feature_columns, config, device)
+            valid_metrics = evaluate(model, valid_data, feature_columns, config, device)
             train_metrics = None
             if config["train"].get("eval_train_metrics", False):
                 train_metrics = evaluate_path(
                     model=model,
-                    path=train_path,
+                    path=train_data,
                     feature_columns=feature_columns,
                     batch_size=int(config["data"]["eval_batch_size"]),
                     max_rows=config["data"].get("max_train_rows"),
                     device=device,
                 )
+            epoch_elapsed_seconds = time.time() - epoch_started_at
             row = {
                 "epoch": epoch,
                 "train_loss": train_loss,
@@ -274,9 +362,24 @@ def run_training(config: dict) -> dict:
                 "valid": valid_metrics,
                 "device": str(device),
                 "train_path": str(train_path),
+                "loader": loader,
+                "epoch_elapsed_seconds": epoch_elapsed_seconds,
             }
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
             handle.flush()
+            print(
+                json.dumps(
+                    {
+                        "event": "epoch_end",
+                        "epoch": epoch,
+                        "epoch_elapsed_seconds": epoch_elapsed_seconds,
+                        "train_loss": train_loss,
+                        "valid": valid_metrics,
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
 
             current_metric = valid_metrics[metric_name]
             if better_metric(current_metric, best_metric, metric_mode):
@@ -313,6 +416,8 @@ def run_training(config: dict) -> dict:
         "metadata_run_id": metadata["run_id"],
         "train_path": str(train_path),
         "valid_path": str(valid_path),
+        "loader": loader,
+        "preload_elapsed_seconds": preload_elapsed_seconds,
         "best_epoch": best_epoch,
         "best_metric": best_metric,
         "checkpoint_metric": metric_name,
@@ -322,6 +427,31 @@ def run_training(config: dict) -> dict:
         "class_reweighting": False,
         "resampling": False,
     }
+    if config["train"].get("eval_test", False):
+        checkpoint = torch.load(
+            run_dir / "checkpoints" / "best.pt",
+            map_location=device,
+            weights_only=False,
+        )
+        model.load_state_dict(checkpoint["model_state_dict"])
+        test_path = split_path(metadata, "test")
+        test_data = test_path
+        if loader == "tensor":
+            test_data = load_materialized_tensor_table(
+                path=test_path,
+                feature_columns=feature_columns,
+                device=device,
+                max_rows=config["data"].get("max_test_rows"),
+            )
+        summary["test_path"] = str(test_path)
+        summary["test"] = evaluate_path(
+            model=model,
+            path=test_data,
+            feature_columns=feature_columns,
+            batch_size=int(config["data"]["eval_batch_size"]),
+            max_rows=config["data"].get("max_test_rows"),
+            device=device,
+        )
     (run_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

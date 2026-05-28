@@ -401,3 +401,28 @@ Tenrec 边界：
 - 给 MLP / DeepFM 增加 base-rate output bias 可能加快收敛，但属于训练策略优化，不是当前 bug fix；GPU 前保持最小变更，避免改变已有 smoke baseline 的解释边界。
 
 状态：已接受为本地收尾阶段决策。后续如果做 full / large-subset 训练配置优化，可以重新评估是否统一加入 base-rate bias。
+
+## 2026-05-28 - 新增 opt-in tensor dataloader，保留 CSV fallback
+
+决策：在 torch 训练数据层新增 `data.loader: tensor` 路径，用于将 materialized encoded CSV 一次性载入 tensor，并在训练期间复用内存 / GPU 显存中的张量；默认仍为 `data.loader: csv`。
+
+边界：
+
+- 不删除旧 CSV dataloader，旧配置未显式设置 `loader` 时继续走 `csv`。
+- `tensor` loader 只改变数据读取和 shuffle 实现，不改变模型、loss、optimizer、metric、checkpoint 或 early stopping 语义。
+- `tensor` loader 使用原始 `train.csv` 载入张量；训练期如启用 shuffle，则用 `torch.randperm` 生成 epoch 内索引，不再依赖预先物化的 hash-bucket shuffled train CSV。
+- 等价性验证时必须用相同 seed 和相同样本顺序隔离 loader 差异；正式训练如果启用 `gpu_randperm`，其样本顺序与旧 hash-bucket shuffle 不同，不能要求逐数值一致。
+
+原因：
+
+- full strict 训练中，旧 CSV dataloader 每 epoch Python 逐行解析 97M 行，4090D GPU 利用率约 2%，明显 IO-bound。
+- strict 当前只有 5 个 encoded feature + label，full train 载入为 int32/float32 tensor 后显存可承受。
+- 保留 CSV fallback 便于回归对拍、低显存机器和问题定位。
+
+状态：已实现并通过 LR / DeepFM loader 等价对拍。性能上已缓解 CSV 解析瓶颈，但 LR 小模型在 batch size 8192 下仍不能吃满 GPU；进一步提高 GPU 利用率需要另行评估 batch size、训练循环或模型计算量，不能混入 dataloader 语义改动。
+
+补充决策：
+
+- 后续 strict baseline 复跑以 `data.loader: tensor` 作为主路径，原因是 LR / DeepFM 对拍已确认 tensor loader 与 CSV loader 在相同 seed、相同样本顺序下数值完全一致。
+- CSV loader 和 hash-bucket shuffled CSV 继续保留为 fallback / regression check。
+- 已完成的 4 个 strict FULL baseline 指标来自 `csv` loader；不得在文档中改写成 tensor loader 产出。

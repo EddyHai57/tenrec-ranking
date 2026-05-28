@@ -441,3 +441,100 @@ Closed
 - 修复或 workaround
 - 验证
 - 状态：open、mitigated、closed
+
+## 2026-05-28 - Full training CSV dataloader IO-bound
+
+### 类型
+
+training / performance
+
+### 现象
+
+4090D 上 strict FULL 训练时，旧 dataloader 每 epoch 通过 Python `csv.DictReader` 逐行解析 materialized CSV：
+
+- full train rows：97,146,674
+- LR full epoch 1 wall-clock：约 505.385s
+- GPU 显存占用：约 495 MiB
+- GPU 利用率：约 2%
+
+训练明显不是 GPU compute-bound。
+
+### 证据
+
+旧 CSV full run：
+
+```text
+run_id: 20260528-031610-torch_lr_full-lr
+epoch 1 elapsed: 505.3850977420807s
+epoch 1 valid AUC: 0.7647105088321045
+epoch 1 valid GAUC: 0.7119054550320486
+epoch 1 valid LogLoss: 0.49633235134902587
+```
+
+新增 tensor loader 后 LR FULL 1 epoch performance demo：
+
+```text
+run_id: 20260528-131845-perf_lr_tensor_full_1epoch-lr
+preload elapsed: 27.27977681159973s
+epoch 1 elapsed: 103.33020281791687s
+epoch 1 valid AUC: 0.7645604166577312
+epoch 1 valid GAUC: 0.7119516961953584
+epoch 1 valid LogLoss: 0.49619740976391186
+peak GPU util: 16%
+average GPU util: 5.425373134328358%
+peak memory: 7405 MiB
+```
+
+### 根因或当前假设
+
+旧路径每 epoch 重复解析 CSV，CPU 端构造 Python dict/list，再转 tensor，导致 GPU 长时间等待。
+
+tensor loader 消除重复 CSV 解析后，LR epoch 明显缩短，但 GPU 仍未吃满。剩余瓶颈不是 CSV parser 本身，而是：
+
+- LR 模型和 strict 5-feature 输入计算量极小；
+- batch size 8192 下 full train 仍有约 1.18 万个 optimizer step，Python training loop / optimizer step overhead 明显；
+- 每 epoch full valid metric 仍需生成并搬回 11.6M rows 的 labels/scores/groups 计算 AUC/GAUC。
+
+### 修复或 workaround
+
+- 新增 `data.loader: tensor` opt-in 路径。
+- materialized CSV 首次载入为 `int32` feature matrix + `float32` labels。
+- train / valid / test 可常驻目标 device。
+- tensor train shuffle 使用 `torch.randperm(..., device=device)`，取代 b64 hash-bucket shuffled CSV 文件。
+- 默认仍为 `loader: csv`，保留 fallback。
+
+### 验证
+
+同 seed、同顺序、同 row cap 下做 CSV vs tensor loader 对拍：
+
+LR：
+
+```text
+epoch 1 train loss: 0.6318812780380249 / 0.6318812780380249
+epoch 1 valid AUC: 0.5909480469165779 / 0.5909480469165779
+epoch 1 valid GAUC: 0.5824200924216459 / 0.5824200924216459
+epoch 1 valid LogLoss: 0.5948254304188908 / 0.5948254304188908
+epoch 2 train loss: 0.5744604323196412 / 0.5744604323196412
+epoch 2 valid AUC: 0.6116213666252145 / 0.6116213666252145
+epoch 2 valid GAUC: 0.5946678858627868 / 0.5946678858627868
+epoch 2 valid LogLoss: 0.588292578654626 / 0.588292578654626
+```
+
+DeepFM：
+
+```text
+epoch 1 train loss: 0.6751879526138306 / 0.6751879526138306
+epoch 1 valid AUC: 0.5502702944492442 / 0.5502702944492442
+epoch 1 valid GAUC: 0.5636236642183162 / 0.5636236642183162
+epoch 1 valid LogLoss: 0.6496039477501342 / 0.6496039477501342
+epoch 2 train loss: 0.6250755997657775 / 0.6250755997657775
+epoch 2 valid AUC: 0.5473344027790169 / 0.5473344027790169
+epoch 2 valid GAUC: 0.5734421885685355 / 0.5734421885685355
+epoch 2 valid LogLoss: 0.6027031991052973 / 0.6027031991052973
+```
+
+### 状态
+
+Mitigated。
+
+CSV 解析瓶颈已被 tensor loader 明显缓解，但“GPU 利用率显著吃满”尚未完成。若继续优化，必须单独设计并审计 batch size、训练循环、metric 计算或模型计算量，不能把这些改变混入 dataloader 等价优化。

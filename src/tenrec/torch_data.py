@@ -3,8 +3,10 @@ import hashlib
 import json
 import random
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import torch
 
 
@@ -146,6 +148,102 @@ def make_batch(features: dict[str, list[int]], labels: list[float], device: torc
         },
         "labels": torch.tensor(labels, dtype=torch.float32, device=device),
     }
+
+
+@dataclass(frozen=True)
+class MaterializedTensorTable:
+    feature_columns: list[str]
+    features: torch.Tensor
+    labels: torch.Tensor
+
+    @property
+    def num_rows(self) -> int:
+        return int(self.labels.numel())
+
+
+def materialized_fieldnames(feature_columns: list[str]) -> list[str]:
+    return ["click"] + [f"{column}_idx" for column in feature_columns]
+
+
+def load_materialized_tensor_table(
+    path: Path,
+    feature_columns: list[str],
+    device: torch.device,
+    max_rows: int | None = None,
+) -> MaterializedTensorTable:
+    path = Path(path)
+    expected = materialized_fieldnames(feature_columns)
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        header = next(reader, None)
+    if header is None:
+        raise ValueError(f"Missing CSV header: {path}")
+    missing = [column for column in expected if column not in header]
+    if missing:
+        raise ValueError(f"Missing materialized columns in {path}: {missing}")
+
+    usecols = [header.index(column) for column in expected]
+    values = np.loadtxt(
+        path,
+        delimiter=",",
+        skiprows=1,
+        dtype=np.int32,
+        usecols=usecols,
+        max_rows=max_rows,
+    )
+    if values.size == 0:
+        raise ValueError(f"No rows were read from {path}")
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+
+    labels_np = np.ascontiguousarray(values[:, 0].astype(np.float32))
+    features_np = np.ascontiguousarray(values[:, 1:])
+    labels = torch.from_numpy(labels_np).to(device=device)
+    features = torch.from_numpy(features_np).to(device=device)
+    return MaterializedTensorTable(
+        feature_columns=list(feature_columns),
+        features=features,
+        labels=labels,
+    )
+
+
+def tensor_batch_from_matrix(
+    table: MaterializedTensorTable,
+    feature_matrix: torch.Tensor,
+    labels: torch.Tensor,
+) -> dict:
+    return {
+        "features": {
+            column: feature_matrix[:, index]
+            for index, column in enumerate(table.feature_columns)
+        },
+        "labels": labels,
+    }
+
+
+def iter_tensor_batches(
+    table: MaterializedTensorTable,
+    batch_size: int,
+    shuffle: bool = False,
+    generator: torch.Generator | None = None,
+    max_rows: int | None = None,
+):
+    row_count = table.num_rows if max_rows is None else min(table.num_rows, int(max_rows))
+    if row_count <= 0:
+        raise ValueError("No tensor rows are available")
+    indices = None
+    if shuffle:
+        indices = torch.randperm(row_count, device=table.features.device, generator=generator)
+    for start in range(0, row_count, batch_size):
+        end = min(start + batch_size, row_count)
+        if indices is None:
+            feature_matrix = table.features[start:end]
+            labels = table.labels[start:end]
+        else:
+            batch_indices = indices[start:end]
+            feature_matrix = table.features.index_select(0, batch_indices)
+            labels = table.labels.index_select(0, batch_indices)
+        yield tensor_batch_from_matrix(table, feature_matrix, labels)
 
 
 def load_first_batches(
