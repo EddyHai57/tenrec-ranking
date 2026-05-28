@@ -426,3 +426,22 @@ Tenrec 边界：
 - 后续 strict baseline 复跑以 `data.loader: tensor` 作为主路径，原因是 LR / DeepFM 对拍已确认 tensor loader 与 CSV loader 在相同 seed、相同样本顺序下数值完全一致。
 - CSV loader 和 hash-bucket shuffled CSV 继续保留为 fallback / regression check。
 - 已完成的 4 个 strict FULL baseline 指标来自 `csv` loader；不得在文档中改写成 tensor loader 产出。
+
+## 2026-05-28 - multi-seed 作为 strict baseline 报告标准
+
+决策：后续汇报 strict FULL baseline 时，优先使用 3 seeds × 4 models 的 mean ± std 结果，而不是单 seed run。
+
+原因：
+
+- 单 seed full run 已能证明训练链路跑通，但不足以判断 LR / MLP / DeepFM / DCN-v2 之间约 0.2-1.0pp 的 AUC 差距是否稳定。
+- multi-seed 复跑显示 LR -> MLP -> DeepFM / DCN-v2 的 AUC 阶梯整体稳定，std 量级约为 0.0001-0.001。
+- DeepFM 与 DCN-v2 的 AUC 差距小于 2 个合成 std，不应写成 DCN-v2 显著领先 DeepFM。
+- GAUC 与 AUC 排序不完全一致，MLP 的 test GAUC 高于 DeepFM / DCN-v2；后续必须同时报告 AUC、GAUC 和 LogLoss，不能只挑 AUC 讲模型强弱。
+
+报告标准：
+
+- 表格必须包含 mean ± std、每个 seed 的 run_id、best_epoch 分布、test AUC / GAUC / LogLoss。
+- 结论必须写明当前仅使用 5 个 ID/profile 特征，未使用 `hist_*`，未做统计特征和系统超参调优。
+- `project_summary.md` 只写高层工程事实，不嵌入具体 AUC 数字。
+
+状态：已接受为 strict Phase A baseline 报告口径。

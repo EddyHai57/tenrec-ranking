@@ -862,3 +862,72 @@ GPU util: ~2%
 - Tensor loader 在 LR / DeepFM 上通过数值等价对拍。
 - LR FULL epoch 1 从约 505s 降至约 103s，说明 CSV 重复解析瓶颈已被明显缓解。
 - GPU 仍未吃满，峰值 16%、平均约 5.4%。剩余瓶颈来自小模型、小 batch 下的大量 optimizer step 和 full valid metric 计算；继续优化需要单独审计 batch size / train loop / metric 计算，不能写成 dataloader 语义等价改动。
+
+## 2026-05-28 — multi-seed strict FULL baseline (3 seeds × 4 models)
+
+类型：`full training / strict protocol / multi-seed`
+
+目的：
+
+- 用 3 个 seed 复跑 LR / MLP / DeepFM / DCN-v2 strict FULL baseline。
+- 替代单 seed run 作为当前 Phase A baseline 阶梯的主证据。
+- 检查 LR -> MLP -> DeepFM -> DCN-v2 的 AUC / GAUC / LogLoss 稳定性和随机误差范围。
+
+设置：
+
+```text
+server: tenrec-seetacloud
+repo: /root/autodl-tmp/tenrec-ranking-multiseed
+git commit: 6ceffe7
+metadata: /root/autodl-tmp/datasets/tenrec-feed-ctr-data/ctr-3999a64f6fad/metadata_server.json
+loader: tensor
+seeds: 20260525, 42, 2026
+batch_size: 8192
+max epochs: 12
+early stopping: valid LogLoss, patience 4
+test rows: 11,597,816
+summary: /root/autodl-tmp/tenrec-ranking-multiseed/outputs/runs/multi_seed_summary.md
+```
+
+### Per-run result
+
+| model | seed | run_id | best epoch | epochs run | test AUC | test GAUC | GAUC coverage | test LogLoss |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| LR | 20260525 | `20260528-134244-torch_lr_full_tensor_s20260525-lr` | 1 | 5 | 0.7634753075 | 0.7158043506 | 0.8141143988 | 0.4528167236 |
+| LR | 42 | `20260528-135229-torch_lr_full_tensor_s42-lr` | 1 | 5 | 0.7638013414 | 0.7159025467 | 0.8141143988 | 0.4520861242 |
+| LR | 2026 | `20260528-140217-torch_lr_full_tensor_s2026-lr` | 1 | 5 | 0.7634818062 | 0.7159254277 | 0.8141143988 | 0.4523701701 |
+| MLP | 20260525 | `20260528-141210-torch_mlp_full_tensor_s20260525-mlp` | 6 | 10 | 0.7708786776 | 0.7179999893 | 0.8141143988 | 0.4414532797 |
+| MLP | 42 | `20260528-143927-torch_mlp_full_tensor_s42-mlp` | 4 | 8 | 0.7699211170 | 0.7171114240 | 0.8141143988 | 0.4422266866 |
+| MLP | 2026 | `20260528-150121-torch_mlp_full_tensor_s2026-mlp` | 4 | 8 | 0.7706501423 | 0.7181318953 | 0.8141143988 | 0.4404598550 |
+| DeepFM | 20260525 | `20260528-152325-deepfm_full_tensor_s20260525-deepfm` | 1 | 5 | 0.7722641608 | 0.7173398389 | 0.8141143988 | 0.4376242419 |
+| DeepFM | 42 | `20260528-154223-deepfm_full_tensor_s42-deepfm` | 1 | 5 | 0.7722552564 | 0.7171477036 | 0.8141143988 | 0.4377774088 |
+| DeepFM | 2026 | `20260528-160115-deepfm_full_tensor_s2026-deepfm` | 2 | 6 | 0.7742086518 | 0.7169355666 | 0.8141143988 | 0.4390895964 |
+| DCN-v2 | 20260525 | `20260528-162347-dcnv2_full_tensor_s20260525-dcnv2` | 1 | 5 | 0.7733827785 | 0.7176233780 | 0.8141143988 | 0.4367944075 |
+| DCN-v2 | 42 | `20260528-163953-dcnv2_full_tensor_s42-dcnv2` | 1 | 5 | 0.7732709283 | 0.7173286759 | 0.8141143988 | 0.4370195549 |
+| DCN-v2 | 2026 | `20260528-165609-dcnv2_full_tensor_s2026-dcnv2` | 1 | 5 | 0.7732201413 | 0.7172885042 | 0.8141143988 | 0.4365513166 |
+
+### Mean ± std
+
+| model | runs | best_epoch distribution | test AUC mean ± std | test GAUC mean ± std | test LogLoss mean ± std |
+| --- | ---: | --- | ---: | ---: | ---: |
+| LR | 3 | 1, 1, 1 | 0.7635861517 ± 0.0001863881 | 0.7158774416 ± 0.0000643243 | 0.4524243393 ± 0.0003682996 |
+| MLP | 3 | 6, 4, 4 | 0.7704833123 ± 0.0005001048 | 0.7177477695 ± 0.0005550239 | 0.4413799405 ± 0.0008856960 |
+| DeepFM | 3 | 1, 1, 2 | 0.7729093563 ± 0.0011252317 | 0.7171410364 ± 0.0002022186 | 0.4381637490 ± 0.0008054564 |
+| DCN-v2 | 3 | 1, 1, 1 | 0.7732912827 ± 0.0000832072 | 0.7174135194 ± 0.0001828495 | 0.4367884263 ± 0.0002341764 |
+
+### Key observations
+
+- AUC 整体呈现稳定阶梯：LR < MLP < DeepFM < DCN-v2。
+- LR -> MLP 的 AUC 差距约 0.0069，远大于两者 std；LR -> DeepFM / DCN-v2 的差距约 0.0093-0.0097，足以作为当前 strict Phase A baseline 阶梯成立的证据。
+- MLP -> DeepFM 的 AUC 均值差约 0.0024，约为两者合成 std 的 2 倍；方向稳定但不应写成强统计结论。
+- DeepFM 与 DCN-v2 在 AUC 上非常接近，均值差约 0.00038，小于 2 个合成 std；当前 5 特征空间下，DCN-v2 的 cross network 优势没有充分展开。
+- GAUC 出现与 AUC 不完全一致的现象：MLP test GAUC 最高，DCN-v2 次之，DeepFM 低于 MLP / DCN-v2。这说明当前特征空间下用户内排序更依赖 user embedding 和基础表征，显式高阶交叉没有稳定改善 GAUC。
+- best_epoch 模式明显偏早：LR / DeepFM / DCN-v2 多在 epoch 1，MLP 在 epoch 4-6。结合多 seed std 很小，当前瓶颈更像是特征空间薄，而不是训练 epoch 不够或模型欠拟合。
+
+### Limitations
+
+- 当前仍只使用 strict Phase A 的 5 个 ID/profile 特征。
+- 未使用 `hist_1..hist_10` 历史序列。
+- 未构造统计特征或用户兴趣特征。
+- 未做系统超参调优。
+- 这批 run 用于确认 strict baseline 稳定性，不代表模型能力上限。
