@@ -538,3 +538,116 @@ epoch 2 valid LogLoss: 0.6027031991052973 / 0.6027031991052973
 Mitigated。
 
 CSV 解析瓶颈已被 tensor loader 明显缓解，但“GPU 利用率显著吃满”尚未完成。若继续优化，必须单独设计并审计 batch size、训练循环、metric 计算或模型计算量，不能把这些改变混入 dataloader 等价优化。
+
+## 2026-05-28 - 1M hist preprocessing 中 valid/test hist OOV 和 padding 率完全相同
+
+### 类型
+
+data / preprocessing diagnostic
+
+### 现象
+
+阶段 1A 的 `ctr_user_block_1m_seed20260525.csv` hist preprocessing smoke 中，valid 和 test 的 `hist_1..hist_10` OOV 率、padding 率逐位置完全相同。
+
+例如 train-only `item_id` vocab 口径下的 hist OOV rate：
+
+```text
+valid: 12.188598%,12.354472%,11.629812%,13.341420%,12.678962%,13.026260%,13.219088%,12.976498%,13.565349%,12.842762%
+test : 12.188598%,12.354472%,11.629812%,13.341420%,12.678962%,13.026260%,13.219088%,12.976498%,13.565349%,12.842762%
+```
+
+padding rate 也逐位置完全相同。
+
+同时 valid/test 物化文件大小不同：
+
+```text
+valid.csv: 6,768,643 bytes
+test.csv : 6,771,033 bytes
+```
+
+因此需要确认这是统计 bug，还是数据本身导致的现象。
+
+### 证据
+
+检查 `src/tenrec/data.py::encode_and_materialize()` 后确认：
+
+- valid/test 使用同一个 `assignments = split_names_for_user(len(rows))` 按行分配；
+- 每个 split 有独立的 `sequence_oov_counts[split]` 和 `sequence_padding_counts[split]`；
+- 写 CSV 和统计计数在同一逐行循环中完成；
+- 未发现 test 误读 valid counter 或共享 counter 的路径。
+
+独立事后验证直接读取：
+
+```text
+outputs/preprocessed/ctr-610578df3be5/materialized/valid.csv
+outputs/preprocessed/ctr-610578df3be5/materialized/test.csv
+```
+
+重新统计 `hist_1_idx..hist_10_idx` 中：
+
+- OOV：`value == 0`
+- padding：`value == 1`
+
+得到的 valid/test 计数仍完全相同：
+
+```text
+valid rows: 96,459
+test rows : 96,459
+
+OOV counts:
+valid: [11757, 11917, 11218, 12869, 12230, 12565, 12751, 12517, 13085, 12388]
+test : [11757, 11917, 11218, 12869, 12230, 12565, 12751, 12517, 13085, 12388]
+
+padding counts:
+valid: [13, 25, 80, 130, 226, 438, 767, 1087, 1504, 1909]
+test : [13, 25, 80, 130, 226, 438, 767, 1087, 1504, 1909]
+```
+
+进一步按 `user_id_idx` 对 valid/test 做定量检查：
+
+```text
+valid users: 8,170
+test users : 8,170
+valid/test user row-count maps equal: True
+users with same valid/test hist sequence multiset: 8,170 / 8,170
+users with static valid hist sequence: 8,170 / 8,170
+users with static test hist sequence : 8,170 / 8,170
+```
+
+直接扫描 raw 1M sample：
+
+```text
+raw rows: 1,000,200
+users: 8,181
+users with one distinct hist_1..hist_10 sequence across all rows: 8,181 / 8,181
+static hist user rate: 100.000000%
+```
+
+### 根因或当前假设
+
+这不是统计代码 bug，而是当前 Tenrec `ctr_data_1M.csv` / 1M user-block sample 的数据特性：
+
+- 同一 user 的 `hist_1..hist_10` 在所有 rows 中保持静态不变；
+- strict split 中每个 `N >= 3` user 的 valid 行数和 test 行数由同一公式产生，且二者相等；
+- 因此 valid 和 test 覆盖的是同一批 user，且每个 user 在 valid/test 中贡献相同次数的同一条 hist sequence；
+- 所以 hist OOV/padding 统计在 valid/test 间精确相同。
+
+valid/test 物化文件大小不同，是因为 target `item_id_idx`、label 和其他列值不同；hist 统计相同不代表 valid/test 文件内容相同。
+
+### 修复或 workaround
+
+不需要修复。
+
+后续解读 hist 统计时必须明确：
+
+- valid/test hist OOV/padding 完全相同是由静态 per-user hist + valid/test 同用户同计数导致的；
+- 这不影响 train-only item vocab、hist OOV/padding 编码或 dataloader batch shape 的正确性；
+- 但它说明 `hist_*` 更像论文预处理好的 user-level recent-click feature，而不是每条 target row 动态变化的 event-level rolling history。
+
+### 验证
+
+独立 CSV 重算与 metadata 中的 `sequence_oov_counts` / `sequence_padding_counts` 完全一致。
+
+### 状态
+
+Closed。非 bug，但 Phase B / DIN 解释时必须保留该数据语义边界。

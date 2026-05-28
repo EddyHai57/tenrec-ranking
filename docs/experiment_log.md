@@ -1018,3 +1018,151 @@ global overlap rate: 0.000000%
 - 该检查不能证明 Tenrec 原始 `hist_*` 构造严格时间正确；原始构造仍可能依赖 QK-video raw superset 或论文预处理逻辑。
 - 该检查只证明当前 strict split 下无 train -> valid/test 直接 target overlap，不能替代对 DIN 数据管道中 train-only vocab、padding、OOV 和 sequence mask 的实现审计。
 - Check 2 使用 file-order 前 1,000,000 个非 padding hist 取值，不是随机 reservoir sample；结果用于理解 hist item universe 覆盖，不用于模型指标。
+
+## 2026-05-28 — hist preprocessing Stage 1A on 1M sample
+
+类型：`preprocessing smoke / sequence feature diagnostic`
+
+目的：
+
+- 扩展 preprocessing，使 `hist_1..hist_10` 以独立 `sequence_features.hist_item` 命名空间进入物化数据。
+- 验证 hist 共享 `item_id` train-only vocab，不从 hist 列扩展 vocab。
+- 在 1M user-block sample 上先做 smoke，避免直接 full 返工。
+
+设置：
+
+```text
+input: data/samples/ctr_user_block_1m_seed20260525.csv
+config: configs/ctr_user_block_1m_hist.yaml
+run_id: ctr-610578df3be5
+split rows: 807,282 / 96,459 / 96,459
+item_id vocab_size: 222,831
+hist_item vocab_size: 222,831
+peak RSS: 54.73 MiB
+Pass1 / Pass2: 3.224s / 11.143s
+```
+
+验证：
+
+- `hist_item` metadata vocab size 与 `item_id` vocab size 完全相等。
+- CSV loader 和 tensor loader 均能返回 `batch["sequence_features"]["hist_item"]`，shape 为 `[batch, 10]`。
+- 真实 batch 中可同时观察到 OOV index `0` 和 padding index `1`。
+- 非 bug：valid/test 的 hist OOV 和 padding 统计精确相等，原因是 1M sample 中 `hist_1..hist_10` 对每个 user 是静态快照，详见 `docs/data_notes.md` 和 `docs/issue_log.md`。
+
+限制：
+
+- 该 run 是 1M smoke，不是 full preprocessing。
+- full 120M 上仍需复核 static hist user rate、valid/test hist 统计对称性、RSS 和文件大小。
+
+## 2026-05-28 — hist preprocessing Stage 1B on full 120M
+
+类型：`preprocessing / full data / sequence feature diagnostic`
+
+目的：
+
+- 在完整 `data/Tenrec/ctr_data_1M.csv` 上运行带 `hist_1..hist_10` 的 strict preprocessing。
+- 验证 full 上 split / vocab 与旧 strict full run 完全一致。
+- 复核 full 上 `hist_*` 是否仍为 user-level static history snapshot。
+
+设置：
+
+```text
+input: data/Tenrec/ctr_data_1M.csv
+config: configs/ctr_full_hist.yaml
+run_id: ctr-972e0dcb2b8d
+output:
+  outputs/preprocessed/ctr-972e0dcb2b8d/metadata.json
+  outputs/preprocessed/ctr-972e0dcb2b8d/materialized/train.csv
+  outputs/preprocessed/ctr-972e0dcb2b8d/materialized/valid.csv
+  outputs/preprocessed/ctr-972e0dcb2b8d/materialized/test.csv
+monitor:
+  outputs/inspection/preprocess_full_hist_resource_monitor_psutil.json
+```
+
+Command：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_with_resource_monitor.py --output outputs\inspection\preprocess_full_hist_resource_monitor_psutil.json --interval 1.0 -- .\.venv\Scripts\python.exe scripts\preprocess_ctr_data.py --config configs\ctr_full_hist.yaml
+```
+
+Preprocessing result：
+
+| item | value |
+| --- | ---: |
+| run_id | `ctr-972e0dcb2b8d` |
+| train rows | 97,146,674 |
+| valid rows | 11,597,816 |
+| test rows | 11,597,816 |
+| peak RSS | 453.574 MiB |
+| monitor backend | psutil |
+| Pass1 elapsed | 448.096s |
+| Pass2 elapsed | 1482.383s |
+| total monitor elapsed | 1933.062s |
+| user_id vocab size | 999,449 |
+| item_id vocab size | 2,125,651 |
+| hist_item vocab size | 2,125,651 |
+| video_category vocab size | 4 |
+| gender vocab size | 5 |
+| age vocab size | 10 |
+
+Split / vocab 对拍：
+
+- split rows 与旧 full run `ctr-3999a64f6fad` 完全一致：97,146,674 / 11,597,816 / 11,597,816。
+- `user_id`、`item_id`、`video_category`、`gender`、`age` vocab size 与旧 full run 完全一致。
+- `hist_item` vocab size 等于 `item_id` vocab size，确认 hist 共享 item vocab，没有从 hist 列单独扩 vocab。
+
+Hist OOV rate，列顺序 `hist_1..hist_10`：
+
+```text
+train: 0.485887%,0.494693%,0.522157%,0.547717%,0.567138%,0.564605%,0.564580%,0.597682%,0.583296%,0.596099%
+valid: 0.487187%,0.495378%,0.523142%,0.548422%,0.568771%,0.565960%,0.565857%,0.600380%,0.585688%,0.598880%
+test : 0.487187%,0.495378%,0.523142%,0.548422%,0.568771%,0.565960%,0.565857%,0.600380%,0.585688%,0.598880%
+```
+
+Hist padding rate，列顺序 `hist_1..hist_10`：
+
+```text
+train: 0.020979%,0.050060%,0.093356%,0.161401%,0.283306%,0.487745%,0.794545%,1.231422%,1.752415%,2.343957%
+valid: 0.021564%,0.050475%,0.090991%,0.153753%,0.264326%,0.449197%,0.725938%,1.122116%,1.593602%,2.129858%
+test : 0.021564%,0.050475%,0.090991%,0.153753%,0.264326%,0.449197%,0.725938%,1.122116%,1.593602%,2.129858%
+```
+
+valid/test 对称性：
+
+```text
+valid_test_oov_counts_equal: true
+valid_test_padding_counts_equal: true
+```
+
+Full raw static hist check：
+
+```text
+rows: 120,342,306
+users: 999,447
+static hist users: 999,447
+dynamic hist users: 0
+static hist user rate: 100.0000000000%
+distinct hist sequence count distribution: {"1": 999447}
+elapsed: 512.415s
+```
+
+Materialized file sizes：
+
+| split | new hist bytes | old strict bytes |
+| --- | ---: | ---: |
+| train | 7,745,417,919 | 2,128,091,876 |
+| valid | 925,479,593 | 254,545,792 |
+| test | 925,862,820 | 254,929,019 |
+
+结论：
+
+- Full hist preprocessing 已完成，新 run_id 为 `ctr-972e0dcb2b8d`。
+- 旧 full run `ctr-3999a64f6fad` 未改动。
+- full 上 `hist_1..hist_10` 仍是 100% user-level static history snapshot。
+- DIN 后续应按“static hist snapshot + target-dependent attention”语义实现。
+- DIEN 不进入当前路线图，原因是当前 `hist_*` 不包含 per-event history evolution 信号。
+
+限制：
+
+- 本 run 只生成 full hist preprocessing 产物，不包含 DIN 训练指标。
+- 产物位于 ignored `outputs/preprocessed/`，不进入 git。

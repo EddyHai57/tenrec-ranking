@@ -154,6 +154,36 @@ docs/project_summary.md
 
 ---
 
+## 4.5. STATE.md 维护规则
+
+`STATE.md` 是项目根目录下的当前状态指针，不是新的事实源。事实仍以 `docs/data_notes.md`、`docs/decision_log.md`、`docs/experiment_log.md`、`docs/issue_log.md` 和 daily logs 为准。
+
+需要更新 `STATE.md` 的情况：
+
+- 阶段切换，例如 Phase A 到 Phase B。
+- 路线图变化，例如新增或移出方向。
+- 重大决策变更。
+- 关键约束变化，例如工作流、目录、依赖或服务器路径。
+- 完成有意义任务后，下一步实际改变了。
+
+不需要更新 `STATE.md` 的情况：
+
+- 单次实验记录；写入 `docs/experiment_log.md`。
+- 单次 bug 修复；写入 `docs/issue_log.md`。
+- 文档微调。
+- 重复或冗余更新。
+
+维护原则：
+
+- 持续覆盖式更新，不 append。
+- 总长度不超过 60 行。
+- 不复制 decision / experiment / issue 内容，只写当前指针。
+- 不写具体指标数字；指标属于 `docs/experiment_log.md`。
+- 不写废弃或历史信息；历史属于 daily logs。
+- 不确定是否需要更新时，倾向于不更新。
+
+---
+
 ## 5. 数据契约规则
 
 在实现 baseline training 前，必须先验证并记录：
@@ -438,6 +468,7 @@ git remote -v
 已知限制
 未完成事项
 下一步建议
+STATE.md 是否更新，更新了哪一块
 ```
 
 保持简洁。除非 Eddy 要求，不输出长路线图。

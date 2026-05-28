@@ -470,3 +470,34 @@ Tenrec 边界：
 - Check 2 的 98.7324% 是相对 full file item universe 的 sample coverage，不等价于 train-only vocab coverage；正式 DIN 数据管道仍必须使用 train-only item vocab，train 未见 hist item 也映射 OOV。
 
 状态：已接受为 Phase B history / DIN 前置闸门。DIN/DIEN 实现仍需复用 strict split、train-only vocab 和 OOV/missing 规则。
+
+## 2026-05-28 - DIEN 移出当前路线图
+
+决策：DIEN 暂时移出当前 Phase B 路线图，Phase B history 方向先只推进 DIN。
+
+原因：
+
+- 阶段 1A 复核发现，`ctr_user_block_1m_seed20260525.csv` 中 100% user 的 `hist_1..hist_10` 跨 rows 静态不变。
+- 这说明 `hist_*` 在当前 `ctr_data_1M.csv` 中更像 user-level static history snapshot，而不是随 target impression 演化的动态行为序列。
+- DIEN 的核心价值依赖 GRU / interest evolution 对历史兴趣随时间演化的建模；如果输入历史本身在同一 user 内不演化，GRU 时序建模没有明确可学信号。
+- DIN 的 target-dependent attention 仍然成立：同一静态 history snapshot 面对不同 target item 时，attention 权重可以不同。
+
+边界：
+
+- 该决策不否定 DIEN 模型本身，只是不适合当前 `ctr_data_1M.csv` 的 `hist_*` 语义。
+- 如果后续从 raw `QK-video.csv` 自建 per-event rolling history，或找到能反映行为演化的序列输入，可以重新评估 DIEN。
+- 此决策覆盖上一节中“DIN/DIEN 实现前置闸门”的宽口径：hist leakage gate 继续解锁 DIN，但不再解锁 DIEN。
+
+阶段 1B full 120M 复核：
+
+```text
+rows: 120,342,306
+users: 999,447
+static hist users: 999,447
+dynamic hist users: 0
+static hist user rate: 100.0000000000%
+```
+
+结论：full `ctr_data_1M.csv` 上 static hist user rate 仍为 100%。DIN 按“static hist snapshot + target-dependent attention”语义推进；DIEN 不进入当前路线图。
+
+状态：已接受为 Phase B 路线图调整。

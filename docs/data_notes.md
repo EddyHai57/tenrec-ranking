@@ -154,6 +154,57 @@ D:\ANU\project\tenrec-ranking\data\Tenrec
 
 后续可增加 official-compatible reproduction protocol，用于对照官方 benchmark，但必须明确标注其采样、split 和编码口径。
 
+## hist 序列的真实语义
+
+日期：2026-05-28
+
+已验证事实：
+
+- 在 `ctr_user_block_1m_seed20260525.csv` 中，100% user 的 `hist_1..hist_10` 跨该 user 的所有 rows 保持静态不变。
+- raw 1M sample 复核结果：
+
+```text
+raw rows: 1,000,200
+users: 8,181
+users with one distinct hist_1..hist_10 sequence across all rows: 8,181 / 8,181
+static hist user rate: 100.000000%
+```
+
+证据链：
+
+- 阶段 1A hist preprocessing 中，valid/test 的 hist OOV 率和 padding 率在 `hist_1..hist_10` 十个位置上精确相同。
+- 直接读取 `outputs/preprocessed/ctr-610578df3be5/materialized/valid.csv` 和 `test.csv` 重新统计，得到同样的 valid/test 完全相同结果，排除了 metadata 报告层 bug。
+- 按 user 复核，8,170 / 8,170 个 valid/test user 的 hist sequence multiset 完全一致。
+- full hist leakage gate check 中 train hist 到 valid/test target item 直接 overlap 为 0%，这与“hist 是 user 级静态快照、且不含当前 split 的未来 target item”可以自然解释。
+
+推断：
+
+- `hist_1..hist_10` 更可能是 user 被采样进 `ctr_data_1M.csv` 窗口之前的历史点击快照，而不是随每条 target impression 演化的 per-impression rolling sequence。
+- 这是基于当前 1M user-block sample 的实证推断，不是 Tenrec 官方构造逻辑的直接证明。
+
+影响：
+
+- DIN 仍可使用 `hist_1..hist_10`，但语义应写成：对 user-level static history snapshot 做 target-dependent attention。
+- DIN 的 attention 仍然有意义：同一静态 history 在面对不同 target item 时可以产生不同 attention 权重。
+- 不应把该输入解释成 target event 前逐步滚动更新的动态行为序列。
+- DIEN 这类依赖历史行为时序演化的 GRU/interest evolution 结构，在当前 `ctr_data_1M.csv` 的 static hist 语义下没有清晰信号来源。
+
+局限：
+
+- 阶段 1B 已在 full 120M 上确认同一现象：
+
+```text
+rows: 120,342,306
+users: 999,447
+static hist users: 999,447
+dynamic hist users: 0
+static hist user rate: 100.0000000000%
+distinct hist sequence count distribution: {"1": 999447}
+```
+
+- 因此 `hist_1..hist_10` 作为 user-level static history snapshot 是当前 full `ctr_data_1M.csv` 的实证事实。
+- 仍需注意：这不能反推 Tenrec 原始 raw 数据的 history 构造过程，只约束当前 task-specific CTR 文件中的 `hist_*` 字段语义。
+
 ## 本地文件清单
 
 只读文件清单，未做全表扫描：

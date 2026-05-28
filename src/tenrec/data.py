@@ -94,6 +94,36 @@ def encode_value(vocab: dict[str, int], value: str, missing_values: set[str]) ->
     return vocab.get(value, RESERVED_OOV_INDEX)
 
 
+def normalize_sequence_features(config: dict, vocabs: dict[str, dict[str, int]] | None = None) -> dict:
+    sequence_features = {}
+    for name, raw_spec in config.get("sequence_features", {}).items():
+        columns = list(raw_spec["columns"])
+        vocab_source = raw_spec["vocab_source"]
+        if vocabs is not None and vocab_source not in vocabs:
+            raise ValueError(
+                f"Sequence feature {name} references unknown vocab_source: {vocab_source}"
+            )
+        padding_index = int(raw_spec.get("padding_index", RESERVED_MISSING_INDEX))
+        oov_index = int(raw_spec.get("oov_index", RESERVED_OOV_INDEX))
+        if padding_index != RESERVED_MISSING_INDEX:
+            raise ValueError(
+                f"Sequence feature {name} padding_index must be {RESERVED_MISSING_INDEX}"
+            )
+        if oov_index != RESERVED_OOV_INDEX:
+            raise ValueError(f"Sequence feature {name} oov_index must be {RESERVED_OOV_INDEX}")
+        spec = {
+            "columns": columns,
+            "encoded_columns": [f"{column}_idx" for column in columns],
+            "vocab_source": vocab_source,
+            "padding_index": padding_index,
+            "oov_index": oov_index,
+        }
+        if vocabs is not None:
+            spec["vocab_size"] = len(vocabs[vocab_source])
+        sequence_features[name] = spec
+    return sequence_features
+
+
 def canonical_json(data) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -179,10 +209,23 @@ def encode_and_materialize(
     group_column: str,
     vocabs: dict[str, dict[str, int]],
     missing_values: dict[str, set[str]],
+    sequence_features: dict | None = None,
+    sequence_missing_values: dict[str, set[str]] | None = None,
 ) -> dict:
+    sequence_features = sequence_features or {}
+    sequence_missing_values = sequence_missing_values or {}
     output_dir.mkdir(parents=True, exist_ok=True)
     split_paths = {split: output_dir / f"{split}.csv" for split in SPLITS}
-    fieldnames = [label_column] + [f"{column}_idx" for column in feature_columns]
+    sequence_encoded_columns = [
+        encoded_column
+        for spec in sequence_features.values()
+        for encoded_column in spec["encoded_columns"]
+    ]
+    fieldnames = (
+        [label_column]
+        + [f"{column}_idx" for column in feature_columns]
+        + sequence_encoded_columns
+    )
     handles = {
         split: path.open("w", encoding="utf-8", newline="")
         for split, path in split_paths.items()
@@ -195,6 +238,20 @@ def encode_and_materialize(
     label_counts = {split: Counter() for split in SPLITS}
     oov_counts = {split: Counter() for split in SPLITS}
     missing_counts = {split: Counter() for split in SPLITS}
+    sequence_oov_counts = {
+        split: {
+            name: Counter()
+            for name in sequence_features
+        }
+        for split in SPLITS
+    }
+    sequence_padding_counts = {
+        split: {
+            name: Counter()
+            for name in sequence_features
+        }
+        for split in SPLITS
+    }
     distinct_groups = {split: set() for split in SPLITS}
 
     try:
@@ -209,6 +266,18 @@ def encode_and_materialize(
                         oov_counts[split][column] += 1
                     if idx == RESERVED_MISSING_INDEX:
                         missing_counts[split][column] += 1
+                for name, spec in sequence_features.items():
+                    source_vocab = vocabs[spec["vocab_source"]]
+                    missing_for_sequence = sequence_missing_values[name]
+                    for column, encoded_column in zip(
+                        spec["columns"], spec["encoded_columns"]
+                    ):
+                        idx = encode_value(source_vocab, row[column], missing_for_sequence)
+                        encoded[encoded_column] = idx
+                        if idx == RESERVED_OOV_INDEX:
+                            sequence_oov_counts[split][name][column] += 1
+                        if idx == RESERVED_MISSING_INDEX:
+                            sequence_padding_counts[split][name][column] += 1
                 writers[split].writerow(encoded)
                 split_rows[split] += 1
                 label_counts[split][row[label_column]] += 1
@@ -234,6 +303,20 @@ def encode_and_materialize(
         "missing_counts": {
             split: dict(counts) for split, counts in missing_counts.items()
         },
+        "sequence_oov_counts": {
+            split: {
+                name: dict(counts)
+                for name, counts in feature_counts.items()
+            }
+            for split, feature_counts in sequence_oov_counts.items()
+        },
+        "sequence_padding_counts": {
+            split: {
+                name: dict(counts)
+                for name, counts in feature_counts.items()
+            }
+            for split, feature_counts in sequence_padding_counts.items()
+        },
         "distinct_group_counts": {
             split: len(values) for split, values in distinct_groups.items()
         },
@@ -244,12 +327,17 @@ def preprocess_ctr(input_path: Path, output_root: Path, config: dict) -> dict:
     input_path = Path(input_path)
     output_root = Path(output_root)
     feature_columns = list(config["features"]["categorical"])
+    raw_sequence_features = normalize_sequence_features(config)
     label_column = config["label_column"]
     group_column = config["group_column"]
     missing_config = config.get("missing_values", {})
     missing_values = {
         column: normalize_missing_values(missing_config.get(column, list(DEFAULT_MISSING_VALUES)))
         for column in feature_columns
+    }
+    sequence_missing_values = {
+        name: normalize_missing_values(missing_config.get(name, list(DEFAULT_MISSING_VALUES)))
+        for name in raw_sequence_features
     }
     run_id = make_run_id(input_path, config)
     run_dir = output_root / run_id
@@ -264,6 +352,7 @@ def preprocess_ctr(input_path: Path, output_root: Path, config: dict) -> dict:
     )
     pass1_summary["elapsed_seconds"] = round(time.time() - pass1_started_at, 3)
     vocab_paths = write_vocabs(vocabs, vocab_dir)
+    sequence_features = normalize_sequence_features(config, vocabs=vocabs)
     pass2_started_at = time.time()
     pass2_summary = encode_and_materialize(
         input_path=input_path,
@@ -273,6 +362,8 @@ def preprocess_ctr(input_path: Path, output_root: Path, config: dict) -> dict:
         group_column=group_column,
         vocabs=vocabs,
         missing_values=missing_values,
+        sequence_features=sequence_features,
+        sequence_missing_values=sequence_missing_values,
     )
     pass2_summary["elapsed_seconds"] = round(time.time() - pass2_started_at, 3)
 
@@ -301,10 +392,14 @@ def preprocess_ctr(input_path: Path, output_root: Path, config: dict) -> dict:
             "seed_used_by_split": False,
         },
         "feature_columns": feature_columns,
+        "sequence_features": sequence_features,
         "label_column": label_column,
         "group_column": group_column,
         "missing_values": {
             column: sorted(values) for column, values in missing_values.items()
+        },
+        "sequence_missing_values": {
+            name: sorted(values) for name, values in sequence_missing_values.items()
         },
         "vocab_sizes": {column: len(vocab) for column, vocab in vocabs.items()},
         "vocab_paths": vocab_paths,

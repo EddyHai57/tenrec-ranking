@@ -29,6 +29,27 @@ class TorchDataTest(unittest.TestCase):
             writer = csv.writer(handle)
             writer.writerows(rows)
 
+    def write_materialized_with_hist(self, path: Path) -> None:
+        rows = [
+            [
+                "click",
+                "user_id_idx",
+                "item_id_idx",
+                "video_category_idx",
+                "gender_idx",
+                "age_idx",
+                "hist_1_idx",
+                "hist_2_idx",
+                "hist_3_idx",
+            ],
+            [0, 10, 100, 1, 2, 3, 100, 1, 0],
+            [1, 11, 101, 1, 2, 4, 0, 1, 101],
+            [0, 12, 102, 2, 3, 5, 102, 103, 1],
+        ]
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerows(rows)
+
     def test_tensor_batches_match_csv_batches_without_shuffle(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "train.csv"
@@ -84,6 +105,49 @@ class TorchDataTest(unittest.TestCase):
 
             self.assertTrue(torch.equal(first[0]["labels"], second[0]["labels"]))
             self.assertFalse(torch.equal(first[0]["labels"], table.labels[:3]))
+
+    def test_csv_and_tensor_batches_include_hist_sequence_features(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "train.csv"
+            self.write_materialized_with_hist(path)
+            feature_columns = ["user_id", "item_id", "video_category", "gender", "age"]
+            sequence_features = {
+                "hist_item": {
+                    "encoded_columns": ["hist_1_idx", "hist_2_idx", "hist_3_idx"],
+                }
+            }
+            device = torch.device("cpu")
+
+            csv_batch = next(
+                iter_materialized_batches(
+                    path=path,
+                    feature_columns=feature_columns,
+                    batch_size=2,
+                    device=device,
+                    sequence_features=sequence_features,
+                )
+            )
+            table = load_materialized_tensor_table(
+                path=path,
+                feature_columns=feature_columns,
+                device=device,
+                sequence_features=sequence_features,
+            )
+            tensor_batch = next(iter_tensor_batches(table=table, batch_size=2, shuffle=False))
+
+            self.assertEqual(tuple(csv_batch["sequence_features"]["hist_item"].shape), (2, 3))
+            self.assertTrue(
+                torch.equal(
+                    csv_batch["sequence_features"]["hist_item"],
+                    torch.tensor([[100, 1, 0], [0, 1, 101]], dtype=torch.long),
+                )
+            )
+            self.assertTrue(
+                torch.equal(
+                    tensor_batch["sequence_features"]["hist_item"],
+                    csv_batch["sequence_features"]["hist_item"],
+                )
+            )
 
 
 if __name__ == "__main__":

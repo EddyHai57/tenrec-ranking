@@ -3,7 +3,7 @@ import hashlib
 import json
 import random
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +20,10 @@ def encoded_feature_columns(metadata: dict) -> list[str]:
 
 def raw_feature_columns(metadata: dict) -> list[str]:
     return list(metadata["feature_columns"])
+
+
+def sequence_feature_specs(metadata: dict) -> dict:
+    return dict(metadata.get("sequence_features", {}))
 
 
 def split_path(metadata: dict, split: str) -> Path:
@@ -118,10 +122,13 @@ def iter_materialized_batches(
     batch_size: int,
     device: torch.device,
     max_rows: int | None = None,
+    sequence_features: dict | None = None,
 ):
     path = Path(path)
     labels = []
     features = {column: [] for column in feature_columns}
+    sequence_features = sequence_features or {}
+    sequences = {name: [] for name in sequence_features}
     seen_rows = 0
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -132,22 +139,38 @@ def iter_materialized_batches(
             labels.append(float(row["click"]))
             for column in feature_columns:
                 features[column].append(int(row[f"{column}_idx"]))
+            for name, spec in sequence_features.items():
+                sequences[name].append(
+                    [int(row[column]) for column in spec["encoded_columns"]]
+                )
             if len(labels) == batch_size:
-                yield make_batch(features, labels, device)
+                yield make_batch(features, labels, device, sequences)
                 labels = []
                 features = {column: [] for column in feature_columns}
+                sequences = {name: [] for name in sequence_features}
     if labels:
-        yield make_batch(features, labels, device)
+        yield make_batch(features, labels, device, sequences)
 
 
-def make_batch(features: dict[str, list[int]], labels: list[float], device: torch.device):
-    return {
+def make_batch(
+    features: dict[str, list[int]],
+    labels: list[float],
+    device: torch.device,
+    sequence_values: dict[str, list[list[int]]] | None = None,
+):
+    batch = {
         "features": {
             column: torch.tensor(values, dtype=torch.long, device=device)
             for column, values in features.items()
         },
         "labels": torch.tensor(labels, dtype=torch.float32, device=device),
     }
+    if sequence_values:
+        batch["sequence_features"] = {
+            name: torch.tensor(values, dtype=torch.long, device=device)
+            for name, values in sequence_values.items()
+        }
+    return batch
 
 
 @dataclass(frozen=True)
@@ -155,14 +178,25 @@ class MaterializedTensorTable:
     feature_columns: list[str]
     features: torch.Tensor
     labels: torch.Tensor
+    sequence_features: dict = field(default_factory=dict)
+    sequences: dict[str, torch.Tensor] = field(default_factory=dict)
 
     @property
     def num_rows(self) -> int:
         return int(self.labels.numel())
 
 
-def materialized_fieldnames(feature_columns: list[str]) -> list[str]:
-    return ["click"] + [f"{column}_idx" for column in feature_columns]
+def materialized_fieldnames(
+    feature_columns: list[str],
+    sequence_features: dict | None = None,
+) -> list[str]:
+    sequence_features = sequence_features or {}
+    sequence_columns = [
+        column
+        for spec in sequence_features.values()
+        for column in spec["encoded_columns"]
+    ]
+    return ["click"] + [f"{column}_idx" for column in feature_columns] + sequence_columns
 
 
 def load_materialized_tensor_table(
@@ -170,9 +204,11 @@ def load_materialized_tensor_table(
     feature_columns: list[str],
     device: torch.device,
     max_rows: int | None = None,
+    sequence_features: dict | None = None,
 ) -> MaterializedTensorTable:
     path = Path(path)
-    expected = materialized_fieldnames(feature_columns)
+    sequence_features = sequence_features or {}
+    expected = materialized_fieldnames(feature_columns, sequence_features)
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.reader(handle)
         header = next(reader, None)
@@ -197,13 +233,23 @@ def load_materialized_tensor_table(
         values = values.reshape(1, -1)
 
     labels_np = np.ascontiguousarray(values[:, 0].astype(np.float32))
-    features_np = np.ascontiguousarray(values[:, 1:])
+    feature_end = 1 + len(feature_columns)
+    features_np = np.ascontiguousarray(values[:, 1:feature_end])
     labels = torch.from_numpy(labels_np).to(device=device)
     features = torch.from_numpy(features_np).to(device=device)
+    sequences = {}
+    cursor = feature_end
+    for name, spec in sequence_features.items():
+        width = len(spec["encoded_columns"])
+        sequence_np = np.ascontiguousarray(values[:, cursor:cursor + width])
+        sequences[name] = torch.from_numpy(sequence_np).to(device=device)
+        cursor += width
     return MaterializedTensorTable(
         feature_columns=list(feature_columns),
         features=features,
         labels=labels,
+        sequence_features=dict(sequence_features),
+        sequences=sequences,
     )
 
 
@@ -211,14 +257,18 @@ def tensor_batch_from_matrix(
     table: MaterializedTensorTable,
     feature_matrix: torch.Tensor,
     labels: torch.Tensor,
+    sequence_matrices: dict[str, torch.Tensor] | None = None,
 ) -> dict:
-    return {
+    batch = {
         "features": {
             column: feature_matrix[:, index]
             for index, column in enumerate(table.feature_columns)
         },
         "labels": labels,
     }
+    if sequence_matrices:
+        batch["sequence_features"] = sequence_matrices
+    return batch
 
 
 def iter_tensor_batches(
@@ -239,11 +289,19 @@ def iter_tensor_batches(
         if indices is None:
             feature_matrix = table.features[start:end]
             labels = table.labels[start:end]
+            sequence_matrices = {
+                name: values[start:end]
+                for name, values in table.sequences.items()
+            }
         else:
             batch_indices = indices[start:end]
             feature_matrix = table.features.index_select(0, batch_indices)
             labels = table.labels.index_select(0, batch_indices)
-        yield tensor_batch_from_matrix(table, feature_matrix, labels)
+            sequence_matrices = {
+                name: values.index_select(0, batch_indices)
+                for name, values in table.sequences.items()
+            }
+        yield tensor_batch_from_matrix(table, feature_matrix, labels, sequence_matrices)
 
 
 def load_first_batches(
@@ -252,6 +310,7 @@ def load_first_batches(
     batch_size: int,
     num_batches: int,
     device: torch.device,
+    sequence_features: dict | None = None,
 ) -> list[dict]:
     batches = []
     for batch in iter_materialized_batches(
@@ -260,6 +319,7 @@ def load_first_batches(
         batch_size=batch_size,
         device=device,
         max_rows=batch_size * num_batches,
+        sequence_features=sequence_features,
     ):
         batches.append(batch)
         if len(batches) >= num_batches:

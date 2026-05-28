@@ -1,0 +1,64 @@
+input_path: data/samples/ctr_user_block_1m_seed20260525.csv
+output_root: outputs/preprocessed
+
+label_column: click
+group_column: user_id
+
+features:
+  categorical:
+    - user_id
+    - item_id
+    - video_category
+    - gender
+    - age
+
+sequence_features:
+  hist_item:
+    columns:
+      - hist_1
+      - hist_2
+      - hist_3
+      - hist_4
+      - hist_5
+      - hist_6
+      - hist_7
+      - hist_8
+      - hist_9
+      - hist_10
+    vocab_source: item_id
+    padding_index: 1
+    oov_index: 0
+
+missing_values:
+  user_id:
+    - ""
+    - "\\N"
+  item_id:
+    - ""
+    - "\\N"
+  video_category:
+    - ""
+    - "\\N"
+  gender:
+    - ""
+    - "\\N"
+  age:
+    - ""
+    - "\\N"
+  hist_item:
+    - ""
+    - "0"
+    - "\\N"
+
+split:
+  train_ratio: 0.8
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  deterministic_user_order: true
+  shuffle: false
+  deduplicate: false
+  seed_used_by_split: false
+
+smoke:
+  batch_size: 32
+  sample_seed: 20260525
