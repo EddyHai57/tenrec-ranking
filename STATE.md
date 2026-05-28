@@ -29,4 +29,5 @@ Phase B 准备阶段：strict Phase A baseline 已完成，当前正在把 `hist
 - 不把 smoke、single seed 或未审结果写成正式结论；指标数字留在 `docs/experiment_log.md`。
 - strict protocol 仍是主线：不负采样、user 内文件顺序 split、train-only vocab、OOV/missing 保留、AUC/GAUC/LogLoss。
 - DIN 语义限定为 static hist snapshot + target-dependent attention；当前不做 DIEN。
+- 代码/文档默认只在本地编辑；服务器只 `git pull` 和跑训练，server-only config 放在 repo 外，未 commit 改动不超过 24 小时；commit message 默认中文（type 保留英文 conventional 前缀）。
 - 当前任务未获 Eddy 明确授权时，不 commit、不 push。

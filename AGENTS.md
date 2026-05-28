@@ -412,6 +412,83 @@ server -> GitHub
 
 ---
 
+## 9.5. Commit / Push 工作流纪律
+
+GitHub 是本项目 single source of truth。任何代码、配置、文档改动最终必须通过 GitHub 同步。本地与服务器 working tree 都只是 GitHub 的镜像。
+
+### 编辑位置
+
+代码改动的默认位置是**本地** `D:\ANU\project\tenrec-ranking`：
+
+- `src/`、`scripts/`、`tests/`、`configs/`、`docs/`、`AGENTS.md`、`STATE.md`、`README.md`、`requirements*.txt` 都只允许在本地编辑。
+- 服务器只做 `git pull`、运行训练、写 `outputs/`、生成 `metadata_server.json` 等 server-only 派生文件。
+- Codex 即使 SSH 在服务器，也不允许直接修改服务器的源代码、配置或文档。
+
+例外（紧急调试）：
+
+- 如必须在服务器修改源码 → 服务器立即 `git add`/`commit`/`push` → 本地立即 `git pull` → 之后所有修改回归本地。
+- 不允许“在服务器悄悄改了文件先用着”。
+
+### Server-only 文件
+
+服务器特有的内容（不应进 git）：
+
+- 服务器路径修正的 metadata 副本，例如 `metadata_server.json`
+- 服务器侧 instance 配置（CUDA 设备、本地路径硬编码的 config）
+- 服务器侧实验脚本临时副本
+
+这类文件保存在 git scope 之外的目录，例如 `/root/autodl-tmp/server-configs-backup/`。不进 `.gitignore`（因为它们根本不在 repo 路径下），不作为 commit 候选。
+
+### Commit 节奏
+
+- 一个 coherent 工作单元（一个 feature、一个 fix、一组相关文档更新）完成后立即 commit。
+- **未 commit 改动不得超过 24 小时**，避免再次出现多端分叉。
+- 一次 commit 只覆盖一个主题；不要把无关改动塞进同一个 commit。
+
+### Commit 授权流程
+
+Codex 不主动 commit / push，除非 Eddy 明确授权。完整流程：
+
+1. 完成代码改动后，跑 `git status --short` / `git diff --stat` / `git diff --name-only`。
+2. 报告给 Eddy：建议 stage 清单 + commit message 草稿 + git status。
+3. 等 Eddy 确认 stage 清单和 message。
+4. 执行显式 `git add <file1> <file2> ...`（不用 `git add .` / `-A`）。
+5. 执行 commit（用 HEREDOC 写 message）。
+6. 报告 `git log --oneline -5`、`git status`、`git diff HEAD~1 --name-only`。
+7. 等 Eddy 确认 commit 干净。
+8. 等 Eddy 明确说“可以 push”才执行 `git push`。
+
+### Commit message 约定
+
+- type 取自：feat / fix / docs / chore / refactor / test / perf（**保留英文**，遵循 conventional commits 规范，便于工具识别）。
+- subject 和 body **默认使用中文**。
+- subject 一行不超过 50 个汉字字符（约等于 72 半角字符）。
+- body 用 HEREDOC 多行写明 why 而非 what。
+- 严禁把 smoke / 单 seed / 未审结果在 commit message 里写成正式成果。
+- 严禁在 commit message 里出现 AUC / GAUC / LogLoss 等具体指标数字（指标的家是 `docs/experiment_log.md`）。
+- 已 push 的历史 commit 不回溯改写（任何已 push 的 commit 禁止 force push 或 rebase 改写）。
+
+### Branch 策略
+
+- 本项目所有工作在 `main` 分支。
+- 不创建 feature branch、不开 PR 流程，除非 Eddy 明示。
+- 禁止 `git push --force`、`git push --force-with-lease` 到 main。
+- 禁止 `--no-verify` / `--no-gpg-sign` 跳过任何 hook。
+
+### 多 working tree 同步
+
+任意时刻：
+
+- GitHub = single source of truth。
+- 本地或服务器任一 working tree 在 commit/push 前**必须先 `git pull --ff-only`**，确认没有落后 GitHub。
+- 落后时立即 pull；有冲突时停下报告 Eddy，不私自 merge。
+
+### STATE.md 同步
+
+涉及工作流、目录、依赖、协议变化的 commit，同步更新 `STATE.md` §4 活跃约束。本规则与 §4.5 的 STATE.md 维护规则一致。
+
+---
+
 ## 10. 本地与服务器边界
 
 本地 Windows 做：
