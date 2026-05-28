@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from tenrec.metrics import binary_auc, binary_log_loss, impression_weighted_gauc
+from tenrec.metrics import binary_auc, binary_log_loss, impression_weighted_gauc, pcoc
 from tenrec.models import build_model
 from tenrec.torch_data import (
     MaterializedTensorTable,
@@ -218,6 +218,7 @@ def evaluate(model, valid_data, feature_columns, config, device):
         "loss": total_loss / total_rows,
         "auc": binary_auc(labels, scores),
         "logloss": binary_log_loss(labels, scores),
+        "pcoc": pcoc(labels, scores),
         "gauc": gauc.gauc,
         "gauc_valid_user_count": gauc.valid_user_count,
         "gauc_total_user_count": gauc.total_user_count,
@@ -261,6 +262,7 @@ def evaluate_path(model, path, feature_columns, batch_size, max_rows, device, se
         "loss": total_loss / total_rows,
         "auc": binary_auc(labels, scores),
         "logloss": binary_log_loss(labels, scores),
+        "pcoc": pcoc(labels, scores),
         "gauc": gauc.gauc,
         "gauc_valid_user_count": gauc.valid_user_count,
         "gauc_total_user_count": gauc.total_user_count,

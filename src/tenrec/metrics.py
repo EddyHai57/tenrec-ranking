@@ -56,6 +56,19 @@ def binary_log_loss(y_true: Iterable[int], y_score: Iterable[float], eps: float 
     return -total / len(labels)
 
 
+def pcoc(y_true: Iterable[int], y_score: Iterable[float]) -> float:
+    labels = [int(value) for value in y_true]
+    scores = [float(value) for value in y_score]
+    if len(labels) != len(scores):
+        raise ValueError("y_true and y_score must have the same length")
+    if not labels:
+        raise ValueError("PCOC is undefined for empty inputs")
+    actual_ctr = sum(labels) / len(labels)
+    if actual_ctr <= 0:
+        raise ValueError("PCOC is undefined when mean(y_true) is zero")
+    return (sum(scores) / len(scores)) / actual_ctr
+
+
 def impression_weighted_gauc(
     y_true: Iterable[int],
     y_score: Iterable[float],

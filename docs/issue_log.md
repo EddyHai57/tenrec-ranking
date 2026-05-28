@@ -651,3 +651,51 @@ valid/test 物化文件大小不同，是因为 target `item_id_idx`、label 和
 ### 状态
 
 Closed。非 bug，但 Phase B / DIN 解释时必须保留该数据语义边界。
+
+## 2026-05-29 - Phase C 本地 smoke 被 Codex Windows sandbox 外部进程问题阻断
+
+### 现象
+
+Phase C 已完成 PCOC 和 official-compatible preprocessing 的初版实现后，继续执行本地 smoke 时，Codex shell 对外部进程开始失败：
+
+```text
+windows sandbox: runner error: CreateProcessAsUserW failed: 1312
+```
+
+已受影响命令包括：
+
+```text
+.\.venv\Scripts\python.exe scripts\preprocess_ctr_data_official.py ...
+git status --short
+where.exe python
+```
+
+尝试提权执行 preprocessing smoke 时，Codex approval 层返回 usage limit 拦截，无法继续通过该 session 跑外部命令。
+
+### 影响
+
+- PCOC / official preprocessing 的 focused tests 曾在实现后通过：`Ran 6 tests OK`。
+- 但 1M official preprocessing smoke、LR overfit gate、后续 commit / push 尚未在当前 session 完成。
+- 该问题属于本地 Codex 执行环境问题，不是已定位的项目代码逻辑失败。
+
+### 下一步
+
+恢复方式任选其一：
+
+- 重启 Codex / 重开本地 shell session 后继续跑 smoke；
+- 或 Eddy 在本机 PowerShell 直接执行 smoke 命令并把输出贴回。
+
+恢复后首先执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\preprocess_ctr_data_official.py --config configs\official_ctr_smoke.yaml
+.\.venv\Scripts\python.exe scripts\train.py --config configs\torch_lr_smoke.yaml --metadata <official-smoke-metadata.json> --overfit --device cpu
+```
+
+### 更新
+
+重启 Codex 后，普通 sandbox 仍会触发 `CreateProcessAsUserW failed: 1312`，但提权执行路径恢复可用。本任务已通过提权路径继续完成本地 focused tests、official 1M preprocessing smoke 和 LR overfit gate。
+
+### 状态
+
+Mitigated。普通 sandbox 仍不稳定；本轮使用提权执行路径继续工作。

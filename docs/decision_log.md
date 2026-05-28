@@ -519,3 +519,38 @@ static hist user rate: 100.0000000000%
 - `project_summary.md` 只写高层工程事实，不写具体 AUC / GAUC / LogLoss 数字。
 
 状态：已接受为 Phase C / Phase D 方向约束。
+
+## 2026-05-29 - Phase C official-compatible 使用复用 vocab 的简化协议
+
+决策：Phase C official-compatible preprocessing 复用 `ctr-972e0dcb2b8d` 的 train-only vocab，不重新从 official sampled train split 建表。
+
+原因：
+
+- 本阶段目标是比较 strict protocol 与 official-compatible 1:2 negative sampling + random split 对 AUC / GAUC / PCOC 的影响，而不是重新评估 vocab 构建策略。
+- 复用 vocab 可以控制 ID 映射差异，避免 full 预处理额外 pass 和多套 vocab 带来的解释噪声。
+- 该做法是工程简化，不等价于论文 exact replication；必须在 experiment log 和 summary 中明确标注 `vocab_source=ctr-972e0dcb2b8d (reuse)`。
+
+约束：
+
+- official-compatible 结果只能写成 reproduction-style 对照，不能写成 exact paper replication。
+- LogLoss 跨 strict / official 协议不可直接比较，因为 label base rate 已被 1:2 negative sampling 改变。
+- PCOC 是 Phase C 校准对照的核心指标，必须与 AUC / GAUC 一起报告。
+
+状态：已接受为 Phase C official-compatible 预处理边界。
+
+## 2026-05-29 - PCOC 只衡量当前评估分布内校准
+
+决策：当前 PCOC 定义固定为 `mean(pred) / mean(label)`，只解释为当前 evaluation distribution 内的校准比值。
+
+原因：
+
+- 在 strict valid/test 上，PCOC 使用 strict label base rate。
+- 在 official-compatible sampled valid/test 上，PCOC 使用采样后的 label base rate；如果模型校准到采样分布，PCOC 仍会接近 1。
+- 因此不能仅凭当前 PCOC 定义证明 1:2 negative sampling 相对原始 CTR 分布的概率校准失真。
+
+后续约束：
+
+- Phase C dual-protocol summary 可以报告 strict PCOC 与 official sampled PCOC，但必须注明它们各自相对于对应评估分布。
+- 如需证明 official 协议牺牲原始概率校准，需要新增 original-base-rate PCOC、采样率校正后的 PCOC，或单独做 de-biased calibration 分析。
+
+状态：已接受为 Phase C 指标解释边界。

@@ -1,0 +1,15 @@
+source_metadata_path: outputs/preprocessed/ctr-972e0dcb2b8d/metadata.json
+output_root: outputs/preprocessed
+seed: 20260525
+
+neg_sampling_ratio: 2
+train_ratio: 0.8
+valid_ratio: 0.1
+test_ratio: 0.1
+shuffle_bucket_count: 16
+max_input_rows: 1000000
+overwrite: true
+
+protocol: official-compatible
+vocab_source: ctr-972e0dcb2b8d
+note: "Smoke-only official-compatible preprocessing: 1M source rows, 1:2 negative sampling, global hash-bucket shuffle, random 8:1:1 split, reusing ctr-972e0dcb2b8d train-only vocab."

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tenrec.metrics import binary_auc, binary_log_loss, impression_weighted_gauc
+from tenrec.metrics import binary_auc, binary_log_loss, impression_weighted_gauc, pcoc
 
 
 class MetricsTest(unittest.TestCase):
@@ -23,6 +23,12 @@ class MetricsTest(unittest.TestCase):
     def test_log_loss_known_answer(self):
         result = binary_log_loss([1, 0], [0.9, 0.2])
         self.assertAlmostEqual(result, 0.164252033486018, places=12)
+
+    def test_pcoc_known_answers(self):
+        y_true = [1, 0, 0, 0]
+        base_rate = sum(y_true) / len(y_true)
+        self.assertAlmostEqual(pcoc(y_true, [base_rate] * len(y_true)), 1.0)
+        self.assertAlmostEqual(pcoc(y_true, [0.5] * len(y_true)), 0.5 / base_rate)
 
     def test_gauc_skips_single_class_users_and_reports_coverage(self):
         y_true = [0, 1, 0, 1, 1, 0, 0]

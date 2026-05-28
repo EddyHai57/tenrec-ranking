@@ -1363,3 +1363,86 @@ outputs/runs/din_multiseed_summary.md
 
 - DIN strict FULL 3 seeds 已完成，AUC / GAUC / LogLoss 均稳定优于当前 4 模型 strict baseline。
 - 当前证据支持 Phase B 完成，并进入 Phase C dual-protocol 对照设计：区分 strict mainline、hist ablation 和 official-compatible reproduction protocol。
+
+## 2026-05-29 — Phase C official-compatible local smoke
+
+类型：`preprocessing smoke / calibration metric smoke`
+
+目的：
+
+- 新增 PCOC 校准指标并接入训练评估流程。
+- 验证 official-compatible preprocessing 初版能复用 `ctr-972e0dcb2b8d` vocab，完成 1:2 negative sampling、global hash-bucket shuffle 和 random 8:1:1 split。
+- 在 official smoke 产物上跑 LR overfit gate 和 100k/50k head smoke，确认训练链路不崩溃。
+
+设置：
+
+```text
+source_metadata: outputs/preprocessed/ctr-972e0dcb2b8d/metadata.json
+config: configs/official_ctr_smoke.yaml
+source rows: 1,000,000 head rows from ctr-972e0dcb2b8d materialized splits
+protocol: official-compatible
+negative sampling: keep all click=1 rows, sample click=0 with target ratio 1:2
+split: global hash-bucket shuffle, then random 8:1:1
+vocab_source: ctr-972e0dcb2b8d (reuse)
+```
+
+预处理结果：
+
+```text
+run_id: ctr-e78027e6d936-official
+metadata_path: outputs/preprocessed/ctr-e78027e6d936-official/metadata.json
+source_label_counts: click=0 724,856; click=1 275,144
+sample_label_counts: click=0 550,473; click=1 275,144
+sampled_rows: 825,617
+train / valid / test rows: 660,493 / 82,561 / 82,563
+train_base_rate: 0.33381428720667744
+```
+
+验证命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_metrics tests.test_official_preprocessing
+.\.venv\Scripts\python.exe scripts\preprocess_ctr_data_official.py --config configs\official_ctr_smoke.yaml
+.\.venv\Scripts\python.exe scripts\train.py --config configs\torch_lr_smoke.yaml --metadata outputs\preprocessed\ctr-e78027e6d936-official\metadata.json --overfit --device cpu
+.\.venv\Scripts\python.exe scripts\train.py --config configs\torch_lr_smoke.yaml --metadata outputs\preprocessed\ctr-e78027e6d936-official\metadata.json --device cpu
+```
+
+测试结果：
+
+```text
+PCOC / official preprocessing focused tests: Ran 6 tests OK
+```
+
+LR overfit gate：
+
+```text
+initial_loss: 0.6931471824645996
+final_loss: 0.012143656611442566
+target_loss: 0.05
+passed: true
+```
+
+LR official smoke：
+
+```text
+run_id: 20260529-044750-torch_lr_smoke-lr
+metadata_run_id: ctr-e78027e6d936-official
+best_epoch: 5
+valid rows: 50,000
+valid AUC: 0.7051061853624729
+valid GAUC: 0.6097681928970258
+valid LogLoss: 0.573972765834224
+valid PCOC: 1.0154340796581025
+```
+
+PCOC 语义说明：
+
+- 本项目实现的 PCOC 严格按 `mean(pred) / mean(label)` 计算。
+- 因此在 official sampled valid/test 上，`mean(label)` 已经是采样后的 base rate；模型如果校准到采样分布，PCOC 会接近 1。
+- 若要证明 official 1:2 negative sampling 相对原始 CTR 分布的概率校准失真，需要新增 original-distribution PCOC 或基于采样率的 de-biased calibration 指标；不能用当前 PCOC 定义直接推出该结论。
+
+限制：
+
+- 本 run 是 1M source-row smoke，不是 full official-compatible 结果。
+- official-compatible preprocessing 复用 `ctr-972e0dcb2b8d` vocab，是 Phase C 控制变量简化，不是 exact paper replication。
+- 当前 negative sampling 使用 Bernoulli sampling，full run 的负样本数会接近 1:2，但不保证逐行精确等于正样本数的 2 倍。
