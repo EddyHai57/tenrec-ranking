@@ -1166,3 +1166,112 @@ Materialized file sizes：
 
 - 本 run 只生成 full hist preprocessing 产物，不包含 DIN 训练指标。
 - 产物位于 ignored `outputs/preprocessed/`，不进入 git。
+
+## 2026-05-29 — DIN local CPU smoke on 1M hist run
+
+类型：`smoke test / tiny subset training / model integration`
+
+目的：
+
+- 实现 DIN 的本地最小训练链路。
+- 验证 `hist_item` sequence feature 能从 materialized data 进入模型。
+- 验证 static user-level hist snapshot + target-dependent attention 语义下的 forward、mask、loss/backward 和 smoke 训练不崩溃。
+
+设置：
+
+```text
+model: DIN
+config: configs/din_smoke.yaml
+metadata: outputs/preprocessed/ctr-610578df3be5/metadata.json
+metadata_run_id: ctr-610578df3be5
+data: 1M user-block hist preprocessing smoke
+loader: tensor
+device: cpu
+max_train_rows: 100000
+max_valid_rows: 50000
+batch_size: 1024
+eval_batch_size: 4096
+strict protocol: user-order split, train-only vocab, no negative sampling, no class reweighting
+```
+
+模型语义：
+
+- target item 和 `hist_item` 共享同一份 `item_id` embedding。
+- `hist_item` 使用 `item_id` train-only vocab；OOV index `0` 不 mask，padding index `1` mask 为 0。
+- Attention 输入为 `[target_emb, hist_emb, target_emb * hist_emb, target_emb - hist_emb]`。
+- Attention 不做 softmax。
+- 用户兴趣向量为 `sum(a_i * hist_i_emb)`。
+- 输出拼接 `[u, target_emb, user_id_emb, video_category_emb, gender_emb, age_emb]` 后进入 deep network。
+
+验证命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_din
+.\.venv\Scripts\python.exe -m py_compile src\tenrec\models.py src\tenrec\training.py src\tenrec\torch_data.py scripts\train.py tests\test_din.py
+.\.venv\Scripts\python.exe -m unittest tests.test_data_contract tests.test_metrics tests.test_torch_data tests.test_torch_models tests.test_din
+.\.venv\Scripts\python.exe scripts\train.py --config configs\din_smoke.yaml --overfit --device cpu
+.\.venv\Scripts\python.exe scripts\train.py --config configs\din_smoke.yaml --device cpu
+```
+
+测试结果：
+
+```text
+DIN focused tests: Ran 6 tests OK
+Related regression tests: Ran 23 tests OK
+```
+
+Overfit gate：
+
+```text
+initial_loss: 0.402283251285553
+final_loss: 0.0
+target_loss: 0.05
+passed: true
+```
+
+未训练模型 initial loss 解释：
+
+```text
+raw_initial_loss on first overfit batch: 0.402283251285553
+first_batch_positive_rate: 0.109375
+train_base_rate: 0.24212604765125445
+train_base_logit: -1.1410586334170694
+train_base_entropy: 0.5535182139924406
+```
+
+说明：DIN 按 config 使用 train base rate 初始化 output bias，因此 raw initial loss 不应直接期望等于无 bias 常数预测的 `ln(2)`；首个 overfit batch 的正例率低于 train base rate，也会进一步拉低该 batch 上的初始 loss。
+
+CPU smoke 结果：
+
+```text
+run_id: 20260529-014749-din_smoke-din
+run_dir: outputs/runs/20260529-014749-din_smoke-din
+best_epoch: 1
+valid rows: 50000
+valid AUC: 0.6033750259652177
+valid GAUC: 0.574797566693139
+GAUC coverage: 0.89796
+valid LogLoss: 0.5790715359423144
+```
+
+参数量：
+
+```text
+total_params: 3,768,850
+embedding_params: 3,696,528
+attention_params: 6,273
+deep_params: 66,049
+```
+
+结论：
+
+- DIN 本地模型、sequence feature 传递、padding/OOV mask、target-dependent attention 和 CPU smoke 训练链路已跑通。
+- valid AUC 大于 0.5，满足本阶段“非崩溃 + 有基本学习信号”的 smoke gate。
+- 本结果不是正式 DIN 指标。
+
+限制：
+
+- 本 run 使用 `ctr-610578df3be5` 1M hist smoke 数据，且使用 `max_train_rows` / `max_valid_rows` head 截断。
+- 尚未使用 full DIN 数据 `ctr-972e0dcb2b8d`。
+- 尚未做服务器 GPU sanity 或 full single seed。
+- 由于 `hist_*` 是 user-level static snapshot，DIN 只能解释为 static history 上的 target-dependent attention，不能写成 DIEN 或动态兴趣演化。

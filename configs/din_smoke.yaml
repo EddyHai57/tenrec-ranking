@@ -1,0 +1,43 @@
+run:
+  name: din_smoke
+  seed: 20260525
+  output_dir: outputs/runs
+  device: auto
+
+data:
+  metadata_path: outputs/preprocessed/ctr-610578df3be5/metadata.json
+  loader: tensor
+  batch_size: 1024
+  eval_batch_size: 4096
+  max_train_rows: 100000
+  max_valid_rows: 50000
+  train_shuffle: gpu_randperm
+  note: "max_*_rows is head truncation and is smoke-only; DIN uses ctr-610578df3be5 1M hist preprocessing."
+
+model:
+  name: din
+  din:
+    embedding_dim: 16
+    attention_hidden_dims: [64, 32]
+    deep_hidden_dims: [256, 128, 64]
+    dropout: 0.1
+    output_bias_init: train_base_rate
+    padding_index: 1
+
+train:
+  epochs: 5
+  lr: 0.001
+  weight_decay: 0.0
+  class_reweighting: false
+  resampling: false
+  checkpoint_metric: logloss
+  checkpoint_mode: min
+  patience: 2
+  eval_train_metrics: true
+
+overfit:
+  num_batches: 1
+  batch_size: 64
+  epochs: 240
+  lr: 0.01
+  target_loss: 0.05

@@ -4,7 +4,7 @@
 
 ## 1. 当前阶段
 
-Phase B 准备阶段：strict Phase A baseline 已完成，当前正在把 `hist_1..hist_10` 接入 DIN 前的数据与模型链路。
+Phase B 本地 DIN 审核阶段：strict Phase A baseline 已完成，`hist_1..hist_10` 已接入 DIN 本地模型与 CPU smoke，等待 Eddy review 后再 commit / push / 上服务器。
 
 ## 2. 最近完成
 
@@ -13,14 +13,15 @@ Phase B 准备阶段：strict Phase A baseline 已完成，当前正在把 `hist
 - 2026-05-28：完成 `hist_1..hist_10` 泄漏闸门验证 PASS；方法和限制见 `docs/experiment_log.md`、`docs/data_notes.md`。
 - 2026-05-28：确认 full `ctr_data_1M.csv` 中 `hist_*` 是 user 级静态快照；DIEN 已移出当前路线图，见 `docs/data_notes.md`、`docs/decision_log.md`。
 - 2026-05-28：完成 full hist preprocessing，DIN 使用新 run `ctr-972e0dcb2b8d`；产物在 ignored `outputs/preprocessed/`。
+- 2026-05-29：完成 DIN 本地实现、focused tests、overfit gate 和 1M hist CPU smoke；完整记录见 `docs/experiment_log.md`。
 
 ## 3. 下一步
 
-1. 确认 `ctr-972e0dcb2b8d` 已通过 Hugging Face private repo 传到服务器，并生成 Linux 路径版 `metadata_server.json`。
-2. 实现 DIN 本地 CPU smoke：共享 item/hist embedding、target-dependent attention、padding mask、无 softmax。
-3. 补 DIN focused tests：共享参数、padding-only mask、OOV 不 mask、target-dependent attention、forward shape。
-4. 本地跑 DIN overfit gate 和 1M smoke，通过后再请求 Eddy 审。
-5. Eddy 批准后，服务器只跑 DIN GPU sanity 和单 seed full，不直接 multi-seed。
+1. Eddy review DIN 实现、focused tests、overfit gate 和 1M CPU smoke 结果。
+2. Eddy 批准后，按本地流程 stage / commit / push；commit message 默认中文，type 保留英文 conventional 前缀。
+3. 服务器 read-only pull 最新代码，不从服务器 push。
+4. 确认 `ctr-972e0dcb2b8d` 已在服务器可用并生成 Linux 路径版 `metadata_server.json`。
+5. 服务器只跑 DIN GPU sanity 和单 seed full，不直接 multi-seed。
 
 ## 4. 活跃约束
 

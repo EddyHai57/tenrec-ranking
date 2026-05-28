@@ -24,7 +24,7 @@ def parse_args():
     parser.add_argument("--config", required=True)
     parser.add_argument("--metadata", help="Override data.metadata_path from config.")
     parser.add_argument("--device", help="Override run.device, e.g. cpu/cuda/auto.")
-    parser.add_argument("--model", choices=["lr", "mlp", "deepfm", "dcnv2"], help="Override model.name.")
+    parser.add_argument("--model", choices=["lr", "mlp", "deepfm", "dcnv2", "din"], help="Override model.name.")
     parser.add_argument("--max-train-rows", type=int, help="Smoke-only head row cap.")
     parser.add_argument("--max-valid-rows", type=int, help="Smoke-only head row cap.")
     parser.add_argument("--overfit", action="store_true", help="Run overfit gate instead of normal training.")

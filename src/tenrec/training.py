@@ -22,6 +22,7 @@ from tenrec.torch_data import (
     load_materialized_tensor_table,
     load_metadata,
     raw_feature_columns,
+    sequence_feature_specs,
     split_path,
 )
 
@@ -68,6 +69,10 @@ def resolve_model_config(config: dict, metadata: dict) -> dict:
         dcnv2_config = model_config.get("dcnv2", {})
         if dcnv2_config.get("output_bias_init") == "train_base_rate":
             dcnv2_config["output_bias_init"] = train_base_logit(metadata)
+    if model_config.get("name") == "din":
+        din_config = model_config.get("din", {})
+        if din_config.get("output_bias_init") == "train_base_rate":
+            din_config["output_bias_init"] = train_base_logit(metadata)
     return model_config
 
 
@@ -126,10 +131,11 @@ def iter_train_batches(train_data, feature_columns, config, device, epoch: int):
         batch_size=int(config["data"]["batch_size"]),
         device=device,
         max_rows=config["data"].get("max_train_rows"),
+        sequence_features=config["data"].get("sequence_features"),
     )
 
 
-def iter_eval_batches(data, feature_columns, batch_size, max_rows, device):
+def iter_eval_batches(data, feature_columns, batch_size, max_rows, device, sequence_features=None):
     if isinstance(data, MaterializedTensorTable):
         return iter_tensor_batches(
             table=data,
@@ -143,7 +149,14 @@ def iter_eval_batches(data, feature_columns, batch_size, max_rows, device):
         batch_size=batch_size,
         device=device,
         max_rows=max_rows,
+        sequence_features=sequence_features,
     )
+
+
+def model_logits(model, batch: dict) -> torch.Tensor:
+    if getattr(model, "requires_sequence_features", False):
+        return model(batch["features"], batch.get("sequence_features"))
+    return model(batch["features"])
 
 
 def train_one_epoch(model, criterion, optimizer, train_data, feature_columns, config, device, epoch: int):
@@ -158,7 +171,7 @@ def train_one_epoch(model, criterion, optimizer, train_data, feature_columns, co
         epoch=epoch,
     ):
         labels = batch["labels"]
-        logits = model(batch["features"])
+        logits = model_logits(model, batch)
         loss = criterion(logits, labels)
         optimizer.zero_grad()
         loss.backward()
@@ -186,8 +199,9 @@ def evaluate(model, valid_data, feature_columns, config, device):
         batch_size=int(config["data"]["eval_batch_size"]),
         max_rows=config["data"].get("max_valid_rows"),
         device=device,
+        sequence_features=config["data"].get("sequence_features"),
     ):
-        logits = model(batch["features"])
+        logits = model_logits(model, batch)
         loss = criterion(logits, batch["labels"])
         probabilities = torch.sigmoid(logits)
         rows = batch["labels"].numel()
@@ -214,7 +228,7 @@ def evaluate(model, valid_data, feature_columns, config, device):
 
 
 @torch.no_grad()
-def evaluate_path(model, path, feature_columns, batch_size, max_rows, device):
+def evaluate_path(model, path, feature_columns, batch_size, max_rows, device, sequence_features=None):
     model.eval()
     labels = []
     scores = []
@@ -228,8 +242,9 @@ def evaluate_path(model, path, feature_columns, batch_size, max_rows, device):
         batch_size=batch_size,
         max_rows=max_rows,
         device=device,
+        sequence_features=sequence_features,
     ):
-        logits = model(batch["features"])
+        logits = model_logits(model, batch)
         loss = criterion(logits, batch["labels"])
         probabilities = torch.sigmoid(logits)
         rows = batch["labels"].numel()
@@ -282,6 +297,8 @@ def run_training(config: dict) -> dict:
     metadata_path = Path(config["data"]["metadata_path"])
     metadata = load_metadata(metadata_path)
     feature_columns = raw_feature_columns(metadata)
+    sequence_features = sequence_feature_specs(metadata)
+    config["data"]["sequence_features"] = sequence_features
     vocab_sizes = {column: int(metadata["vocab_sizes"][column]) for column in feature_columns}
     run_id = make_run_id(config)
     run_dir = prepare_run_dir(config, run_id)
@@ -306,12 +323,14 @@ def run_training(config: dict) -> dict:
             feature_columns=feature_columns,
             device=device,
             max_rows=config["data"].get("max_train_rows"),
+            sequence_features=sequence_features,
         )
         valid_data = load_materialized_tensor_table(
             path=valid_path,
             feature_columns=feature_columns,
             device=device,
             max_rows=config["data"].get("max_valid_rows"),
+            sequence_features=sequence_features,
         )
         preload_elapsed_seconds = time.time() - preload_started_at
 
@@ -353,6 +372,7 @@ def run_training(config: dict) -> dict:
                     batch_size=int(config["data"]["eval_batch_size"]),
                     max_rows=config["data"].get("max_train_rows"),
                     device=device,
+                    sequence_features=sequence_features,
                 )
             epoch_elapsed_seconds = time.time() - epoch_started_at
             row = {
@@ -442,6 +462,7 @@ def run_training(config: dict) -> dict:
                 feature_columns=feature_columns,
                 device=device,
                 max_rows=config["data"].get("max_test_rows"),
+                sequence_features=sequence_features,
             )
         summary["test_path"] = str(test_path)
         summary["test"] = evaluate_path(
@@ -451,6 +472,7 @@ def run_training(config: dict) -> dict:
             batch_size=int(config["data"]["eval_batch_size"]),
             max_rows=config["data"].get("max_test_rows"),
             device=device,
+            sequence_features=sequence_features,
         )
     (run_dir / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
@@ -465,6 +487,7 @@ def run_overfit(config: dict) -> dict:
     metadata_path = Path(config["data"]["metadata_path"])
     metadata = load_metadata(metadata_path)
     feature_columns = raw_feature_columns(metadata)
+    sequence_features = sequence_feature_specs(metadata)
     vocab_sizes = {column: int(metadata["vocab_sizes"][column]) for column in feature_columns}
     train_path = split_path(metadata, "train")
     batches = load_first_batches(
@@ -473,6 +496,7 @@ def run_overfit(config: dict) -> dict:
         batch_size=int(config["overfit"]["batch_size"]),
         num_batches=int(config["overfit"]["num_batches"]),
         device=device,
+        sequence_features=sequence_features,
     )
     model_config = resolve_model_config(config, metadata)
     model = build_model(model_config, vocab_sizes, feature_columns).to(device)
@@ -483,7 +507,7 @@ def run_overfit(config: dict) -> dict:
         epoch_loss = 0.0
         rows = 0
         for batch in batches:
-            logits = model(batch["features"])
+            logits = model_logits(model, batch)
             loss = criterion(logits, batch["labels"])
             optimizer.zero_grad()
             loss.backward()
