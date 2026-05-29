@@ -26,6 +26,10 @@ def sequence_feature_specs(metadata: dict) -> dict:
     return dict(metadata.get("sequence_features", {}))
 
 
+def numeric_feature_names(metadata: dict) -> list[str]:
+    return list(metadata.get("numeric_features", {}).get("columns", []))
+
+
 def split_path(metadata: dict, split: str) -> Path:
     return Path(metadata["pass2"]["split_paths"][split])
 
@@ -123,12 +127,15 @@ def iter_materialized_batches(
     device: torch.device,
     max_rows: int | None = None,
     sequence_features: dict | None = None,
+    numeric_features: list[str] | None = None,
 ):
     path = Path(path)
     labels = []
     features = {column: [] for column in feature_columns}
     sequence_features = sequence_features or {}
+    numeric_features = numeric_features or []
     sequences = {name: [] for name in sequence_features}
+    numeric_values = []
     seen_rows = 0
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -143,13 +150,16 @@ def iter_materialized_batches(
                 sequences[name].append(
                     [int(row[column]) for column in spec["encoded_columns"]]
                 )
+            if numeric_features:
+                numeric_values.append([float(row[column]) for column in numeric_features])
             if len(labels) == batch_size:
-                yield make_batch(features, labels, device, sequences)
+                yield make_batch(features, labels, device, sequences, numeric_values)
                 labels = []
                 features = {column: [] for column in feature_columns}
                 sequences = {name: [] for name in sequence_features}
+                numeric_values = []
     if labels:
-        yield make_batch(features, labels, device, sequences)
+        yield make_batch(features, labels, device, sequences, numeric_values)
 
 
 def make_batch(
@@ -157,6 +167,7 @@ def make_batch(
     labels: list[float],
     device: torch.device,
     sequence_values: dict[str, list[list[int]]] | None = None,
+    numeric_values: list[list[float]] | None = None,
 ):
     batch = {
         "features": {
@@ -170,6 +181,12 @@ def make_batch(
             name: torch.tensor(values, dtype=torch.long, device=device)
             for name, values in sequence_values.items()
         }
+    if numeric_values:
+        batch["numeric_features"] = torch.tensor(
+            numeric_values,
+            dtype=torch.float32,
+            device=device,
+        )
     return batch
 
 
@@ -180,6 +197,8 @@ class MaterializedTensorTable:
     labels: torch.Tensor
     sequence_features: dict = field(default_factory=dict)
     sequences: dict[str, torch.Tensor] = field(default_factory=dict)
+    numeric_features: list[str] = field(default_factory=list)
+    numeric_values: torch.Tensor | None = None
 
     @property
     def num_rows(self) -> int:
@@ -189,14 +208,21 @@ class MaterializedTensorTable:
 def materialized_fieldnames(
     feature_columns: list[str],
     sequence_features: dict | None = None,
+    numeric_features: list[str] | None = None,
 ) -> list[str]:
     sequence_features = sequence_features or {}
+    numeric_features = numeric_features or []
     sequence_columns = [
         column
         for spec in sequence_features.values()
         for column in spec["encoded_columns"]
     ]
-    return ["click"] + [f"{column}_idx" for column in feature_columns] + sequence_columns
+    return (
+        ["click"]
+        + [f"{column}_idx" for column in feature_columns]
+        + sequence_columns
+        + numeric_features
+    )
 
 
 def load_materialized_tensor_table(
@@ -205,10 +231,12 @@ def load_materialized_tensor_table(
     device: torch.device,
     max_rows: int | None = None,
     sequence_features: dict | None = None,
+    numeric_features: list[str] | None = None,
 ) -> MaterializedTensorTable:
     path = Path(path)
     sequence_features = sequence_features or {}
-    expected = materialized_fieldnames(feature_columns, sequence_features)
+    numeric_features = numeric_features or []
+    expected = materialized_fieldnames(feature_columns, sequence_features, numeric_features)
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.reader(handle)
         header = next(reader, None)
@@ -223,7 +251,7 @@ def load_materialized_tensor_table(
         path,
         delimiter=",",
         skiprows=1,
-        dtype=np.int32,
+        dtype=np.float32,
         usecols=usecols,
         max_rows=max_rows,
     )
@@ -234,22 +262,28 @@ def load_materialized_tensor_table(
 
     labels_np = np.ascontiguousarray(values[:, 0].astype(np.float32))
     feature_end = 1 + len(feature_columns)
-    features_np = np.ascontiguousarray(values[:, 1:feature_end])
+    features_np = np.ascontiguousarray(values[:, 1:feature_end].astype(np.int64))
     labels = torch.from_numpy(labels_np).to(device=device)
     features = torch.from_numpy(features_np).to(device=device)
     sequences = {}
     cursor = feature_end
     for name, spec in sequence_features.items():
         width = len(spec["encoded_columns"])
-        sequence_np = np.ascontiguousarray(values[:, cursor:cursor + width])
+        sequence_np = np.ascontiguousarray(values[:, cursor:cursor + width].astype(np.int64))
         sequences[name] = torch.from_numpy(sequence_np).to(device=device)
         cursor += width
+    numeric_values = None
+    if numeric_features:
+        numeric_np = np.ascontiguousarray(values[:, cursor:cursor + len(numeric_features)])
+        numeric_values = torch.from_numpy(numeric_np).to(device=device)
     return MaterializedTensorTable(
         feature_columns=list(feature_columns),
         features=features,
         labels=labels,
         sequence_features=dict(sequence_features),
         sequences=sequences,
+        numeric_features=list(numeric_features),
+        numeric_values=numeric_values,
     )
 
 
@@ -258,6 +292,7 @@ def tensor_batch_from_matrix(
     feature_matrix: torch.Tensor,
     labels: torch.Tensor,
     sequence_matrices: dict[str, torch.Tensor] | None = None,
+    numeric_matrix: torch.Tensor | None = None,
 ) -> dict:
     batch = {
         "features": {
@@ -268,6 +303,8 @@ def tensor_batch_from_matrix(
     }
     if sequence_matrices:
         batch["sequence_features"] = sequence_matrices
+    if numeric_matrix is not None:
+        batch["numeric_features"] = numeric_matrix
     return batch
 
 
@@ -293,6 +330,11 @@ def iter_tensor_batches(
                 name: values[start:end]
                 for name, values in table.sequences.items()
             }
+            numeric_matrix = (
+                table.numeric_values[start:end]
+                if table.numeric_values is not None
+                else None
+            )
         else:
             batch_indices = indices[start:end]
             feature_matrix = table.features.index_select(0, batch_indices)
@@ -301,7 +343,18 @@ def iter_tensor_batches(
                 name: values.index_select(0, batch_indices)
                 for name, values in table.sequences.items()
             }
-        yield tensor_batch_from_matrix(table, feature_matrix, labels, sequence_matrices)
+            numeric_matrix = (
+                table.numeric_values.index_select(0, batch_indices)
+                if table.numeric_values is not None
+                else None
+            )
+        yield tensor_batch_from_matrix(
+            table,
+            feature_matrix,
+            labels,
+            sequence_matrices,
+            numeric_matrix,
+        )
 
 
 def load_first_batches(
@@ -311,6 +364,7 @@ def load_first_batches(
     num_batches: int,
     device: torch.device,
     sequence_features: dict | None = None,
+    numeric_features: list[str] | None = None,
 ) -> list[dict]:
     batches = []
     for batch in iter_materialized_batches(
@@ -320,6 +374,7 @@ def load_first_batches(
         device=device,
         max_rows=batch_size * num_batches,
         sequence_features=sequence_features,
+        numeric_features=numeric_features,
     ):
         batches.append(batch)
         if len(batches) >= num_batches:

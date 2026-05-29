@@ -699,3 +699,54 @@ where.exe python
 ### 状态
 
 Mitigated。普通 sandbox 仍不稳定；本轮使用提权执行路径继续工作。
+
+## 2026-05-29 - Phase D OOF stats preprocessing 首版在 1M 上超时
+
+### 现象
+
+首版 `scripts/preprocess_ctr_stats.py` 在本地 1M hist run 上生成 OOF stats features 时超过 20 分钟仍未完成，命令超时：
+
+```text
+scripts/preprocess_ctr_stats.py --source-metadata outputs/preprocessed/ctr-610578df3be5/metadata.json --mode oof
+```
+
+### 根因
+
+首版实现对每个 train row 都执行一次：
+
+```text
+full_count_table.subtract(current_fold_table)
+```
+
+这会按行重复遍历 item/user/category/user_category 的全量 key space，复杂度接近 `O(rows * keys)`，在 807k train rows 上不可接受。
+
+### 修复
+
+将每个 fold 的 OOF lookup tables 预先计算一次：
+
+```text
+oof_tables[fold][feature] = full_tables[feature] - fold_tables[fold][feature]
+```
+
+逐行编码时只查 `oof_tables[fold]`，避免重复构造全量差分表。
+
+### 验证
+
+修复后同一 OOF preprocessing 在本地 1M run 上完成：
+
+```text
+run_id: ctr-5c68a971db3a-stats
+elapsed_seconds: 26.007
+split rows: 807,282 / 96,459 / 96,459
+```
+
+focused test 通过：
+
+```text
+python -m unittest tests.test_phase_d_stats
+Ran 3 tests OK
+```
+
+### 状态
+
+Fixed for local 1M prototype。Full run 前仍需改成 streaming / chunked 版本，当前脚本会把 train/valid/test rows 读入内存。

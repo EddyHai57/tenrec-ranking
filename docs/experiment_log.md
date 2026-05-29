@@ -1544,3 +1544,98 @@ outputs/runs/20260529-132105-dcnv2_official_s2026-dcnv2/summary.json
 
 - Phase C dual-protocol 对照已完成：official-compatible 协议能显著抬高 AUC / GAUC，但 cross-protocol PCOC 显示其概率输出不能直接用于真实分布。
 - strict 协议仍是本项目主线，因为它直接评估真实 row distribution，适合解释工业部署中的概率校准、出价和多目标融合。
+
+## 2026-05-29 — Phase D leakage-safe stats features local smoke
+
+类型：`local smoke / leakage gate / feature engineering prototype`
+
+目的：
+
+- 设计并实现 leakage-safe 统计特征（statistical numeric features）。
+- 在本地 1M hist run 上验证 k-fold OOF target encoding 与 naive in-sample encoding 的差异。
+- 只做本地 head smoke，不跑 full preprocessing，不上服务器，不把 smoke 数字写成正式结论。
+
+预处理：
+
+```text
+source_run_id: ctr-610578df3be5
+oof_stats_run_id: ctr-5c68a971db3a-stats
+naive_stats_run_id: ctr-9cd164fe0f79-stats
+split rows: 807,282 / 96,459 / 96,459
+alpha: 20
+folds: 5
+numeric_features:
+- item_hist_ctr
+- user_hist_ctr
+- user_log_impressions
+- item_log_impressions
+- category_hist_ctr
+- user_category_hist_ctr
+```
+
+Leakage gate：
+
+| protocol | run_id | train AUC | valid AUC | valid LogLoss |
+|---|---|---:|---:|---:|
+| OOF | `20260529-201933-torch_lr_smoke-lr` | 0.7910468791 | 0.7235866572 | 0.5286223230 |
+| naive in-sample | `20260529-202015-torch_lr_smoke-lr` | 0.8411034898 | 0.7265178845 | 0.5306674055 |
+
+解释：
+
+- naive in-sample target encoding 明显抬高 train AUC。
+- naive 的 valid AUC 仅小幅上升，但 valid LogLoss 更差。
+- 因此 full 路线只能使用 OOF train features + train-only valid/test lookup，不接受 naive in-sample target encoding。
+
+Stats feature distribution：
+
+```text
+lookup_scope:
+train: 5fold_oof
+valid: train_only
+test : train_only
+
+missing_rates:
+train item_hist_ctr/item_log_impressions: 0.1864391873
+valid item_hist_ctr/item_log_impressions: 0.1800454079
+test  item_hist_ctr/item_log_impressions: 0.1822224987
+train user_category_hist_ctr: 0.0026446768
+valid user_category_hist_ctr: 0.0025088380
+test  user_category_hist_ctr: 0.0036284846
+```
+
+1M head smoke：
+
+| model | metadata_run_id | run_id | valid AUC | valid GAUC | valid LogLoss |
+|---|---|---|---:|---:|---:|
+| LR no-stats | `ctr-610578df3be5` | `20260529-202125-torch_lr_smoke-lr` | 0.6706136832 | 0.6017097027 | 0.5532483103 |
+| LR OOF stats | `ctr-5c68a971db3a-stats` | `20260529-201933-torch_lr_smoke-lr` | 0.7235866572 | 0.6538558424 | 0.5286223230 |
+| DCN-v2 no-stats | `ctr-610578df3be5` | `20260529-202206-dcnv2_smoke-dcnv2` | 0.6626699359 | 0.5919972767 | 0.5619391738 |
+| DCN-v2 OOF stats | `ctr-5c68a971db3a-stats` | `20260529-202228-dcnv2_smoke-dcnv2` | 0.7277403939 | 0.6569938155 | 0.5254167808 |
+
+验证命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_phase_d_stats tests.test_torch_data tests.test_torch_models
+.\.venv\Scripts\python.exe -m unittest discover tests
+.\.venv\Scripts\python.exe scripts\preprocess_ctr_stats.py --source-metadata outputs\preprocessed\ctr-610578df3be5\metadata.json --output-root outputs\preprocessed --alpha 20 --folds 5 --seed 20260525 --mode oof --overwrite
+.\.venv\Scripts\python.exe scripts\preprocess_ctr_stats.py --source-metadata outputs\preprocessed\ctr-610578df3be5\metadata.json --output-root outputs\preprocessed --alpha 20 --folds 5 --seed 20260525 --mode naive --overwrite
+.\.venv\Scripts\python.exe scripts\train.py --config configs\torch_lr_smoke.yaml --metadata outputs\preprocessed\ctr-5c68a971db3a-stats\metadata.json --device cpu
+.\.venv\Scripts\python.exe scripts\train.py --config configs\torch_lr_smoke.yaml --metadata outputs\preprocessed\ctr-9cd164fe0f79-stats\metadata.json --device cpu
+.\.venv\Scripts\python.exe scripts\train.py --config configs\torch_lr_smoke.yaml --metadata outputs\preprocessed\ctr-610578df3be5\metadata.json --device cpu
+.\.venv\Scripts\python.exe scripts\train.py --config configs\dcnv2_smoke.yaml --metadata outputs\preprocessed\ctr-610578df3be5\metadata.json --device cpu
+.\.venv\Scripts\python.exe scripts\train.py --config configs\dcnv2_smoke.yaml --metadata outputs\preprocessed\ctr-5c68a971db3a-stats\metadata.json --device cpu
+```
+
+测试结果：
+
+```text
+Phase D focused tests: Ran 14 tests OK
+Full unittest discover: Ran 36 tests OK
+```
+
+已知限制：
+
+- 本次仅为 1M head smoke，不能外推为 full 结果。
+- `scripts/preprocess_ctr_stats.py` 当前是本地 1M 原型，读取 split CSV 到内存；full run 前需要改成 streaming / chunked 实现。
+- `numeric_features` 当前接入 LR / MLP / DCN-v2，未接入 DeepFM / DIN。
+- 当前只验证 6 个统计特征；是否进入 full 需要 Eddy review 后确认。

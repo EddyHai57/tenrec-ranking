@@ -50,6 +50,25 @@ class TorchDataTest(unittest.TestCase):
             writer = csv.writer(handle)
             writer.writerows(rows)
 
+    def write_materialized_with_numeric(self, path: Path) -> None:
+        rows = [
+            [
+                "click",
+                "user_id_idx",
+                "item_id_idx",
+                "video_category_idx",
+                "gender_idx",
+                "age_idx",
+                "item_hist_ctr",
+                "user_log_impressions",
+            ],
+            [0, 10, 100, 1, 2, 3, -0.5, 1.25],
+            [1, 11, 101, 1, 2, 4, 0.75, -0.25],
+        ]
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerows(rows)
+
     def test_tensor_batches_match_csv_batches_without_shuffle(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "train.csv"
@@ -148,6 +167,35 @@ class TorchDataTest(unittest.TestCase):
                     csv_batch["sequence_features"]["hist_item"],
                 )
             )
+
+    def test_csv_and_tensor_batches_include_numeric_features(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "train.csv"
+            self.write_materialized_with_numeric(path)
+            feature_columns = ["user_id", "item_id", "video_category", "gender", "age"]
+            numeric_features = ["item_hist_ctr", "user_log_impressions"]
+            device = torch.device("cpu")
+
+            csv_batch = next(
+                iter_materialized_batches(
+                    path=path,
+                    feature_columns=feature_columns,
+                    batch_size=2,
+                    device=device,
+                    numeric_features=numeric_features,
+                )
+            )
+            table = load_materialized_tensor_table(
+                path=path,
+                feature_columns=feature_columns,
+                device=device,
+                numeric_features=numeric_features,
+            )
+            tensor_batch = next(iter_tensor_batches(table=table, batch_size=2, shuffle=False))
+
+            expected = torch.tensor([[-0.5, 1.25], [0.75, -0.25]], dtype=torch.float32)
+            self.assertTrue(torch.allclose(csv_batch["numeric_features"], expected))
+            self.assertTrue(torch.allclose(tensor_batch["numeric_features"], expected))
 
 
 if __name__ == "__main__":

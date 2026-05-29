@@ -117,6 +117,38 @@ class TorchModelsTest(unittest.TestCase):
         )
         self.assertEqual(tuple(logits.shape), (3,))
 
+    def test_lr_and_dcnv2_accept_numeric_features(self):
+        features = {
+            "user_id": torch.tensor([1, 2], dtype=torch.long),
+            "item_id": torch.tensor([2, 3], dtype=torch.long),
+        }
+        numeric = torch.tensor([[0.1, -0.2], [1.0, 0.5]], dtype=torch.float32)
+        lr = build_model(
+            {"name": "lr"},
+            vocab_sizes={"user_id": 5, "item_id": 7},
+            feature_columns=["user_id", "item_id"],
+            numeric_features=["item_hist_ctr", "user_log_impressions"],
+        )
+        dcnv2 = build_model(
+            {
+                "name": "dcnv2",
+                "dcnv2": {
+                    "embedding_dim": 4,
+                    "cross_layers": 1,
+                    "deep_hidden_dims": [8],
+                    "dropout": 0.0,
+                },
+            },
+            vocab_sizes={"user_id": 5, "item_id": 7},
+            feature_columns=["user_id", "item_id"],
+            numeric_features=["item_hist_ctr", "user_log_impressions"],
+        )
+
+        self.assertTrue(lr.uses_numeric_features)
+        self.assertTrue(dcnv2.uses_numeric_features)
+        self.assertEqual(tuple(lr(features, numeric).shape), (2,))
+        self.assertEqual(tuple(dcnv2(features, numeric).shape), (2,))
+
     def test_dcnv2_uses_small_initialization_and_output_bias(self):
         torch.manual_seed(20260525)
         model = build_model(

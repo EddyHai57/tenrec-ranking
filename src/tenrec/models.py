@@ -2,17 +2,35 @@ import torch
 from torch import nn
 
 
+def append_numeric_features(parts: list[torch.Tensor], numeric_features: torch.Tensor | None) -> list[torch.Tensor]:
+    if numeric_features is not None:
+        parts.append(numeric_features)
+    return parts
+
+
 class FieldWiseLogisticRegression(nn.Module):
     """True categorical LR: one scalar lookup per field value plus a global bias."""
 
-    def __init__(self, vocab_sizes: dict[str, int], feature_columns: list[str]):
+    def __init__(
+        self,
+        vocab_sizes: dict[str, int],
+        feature_columns: list[str],
+        numeric_features: list[str] | None = None,
+    ):
         super().__init__()
         self.feature_columns = list(feature_columns)
+        self.numeric_features = list(numeric_features or [])
+        self.uses_numeric_features = bool(self.numeric_features)
         self.weights = nn.ModuleDict(
             {
                 column: nn.Embedding(vocab_sizes[column], 1)
                 for column in self.feature_columns
             }
+        )
+        self.numeric_weights = (
+            nn.Linear(len(self.numeric_features), 1, bias=False)
+            if self.numeric_features
+            else None
         )
         self.bias = nn.Parameter(torch.zeros(1))
         self.reset_parameters()
@@ -20,11 +38,21 @@ class FieldWiseLogisticRegression(nn.Module):
     def reset_parameters(self):
         for embedding in self.weights.values():
             nn.init.zeros_(embedding.weight)
+        if self.numeric_weights is not None:
+            nn.init.zeros_(self.numeric_weights.weight)
 
-    def forward(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        features: dict[str, torch.Tensor],
+        numeric_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         logits = self.bias.expand_as(features[self.feature_columns[0]].float())
         for column in self.feature_columns:
             logits = logits + self.weights[column](features[column]).squeeze(-1)
+        if self.numeric_weights is not None:
+            if numeric_features is None:
+                raise ValueError("LR requires numeric_features")
+            logits = logits + self.numeric_weights(numeric_features).squeeze(-1)
         return logits
 
 
@@ -36,9 +64,12 @@ class CtrMLP(nn.Module):
         embedding_dim: int,
         hidden_dims: list[int],
         dropout: float = 0.0,
+        numeric_features: list[str] | None = None,
     ):
         super().__init__()
         self.feature_columns = list(feature_columns)
+        self.numeric_features = list(numeric_features or [])
+        self.uses_numeric_features = bool(self.numeric_features)
         self.embeddings = nn.ModuleDict(
             {
                 column: nn.Embedding(vocab_sizes[column], embedding_dim)
@@ -46,7 +77,7 @@ class CtrMLP(nn.Module):
             }
         )
         layers = []
-        input_dim = embedding_dim * len(self.feature_columns)
+        input_dim = embedding_dim * len(self.feature_columns) + len(self.numeric_features)
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(input_dim, hidden_dim))
             layers.append(nn.ReLU())
@@ -56,9 +87,15 @@ class CtrMLP(nn.Module):
         layers.append(nn.Linear(input_dim, 1))
         self.mlp = nn.Sequential(*layers)
 
-    def forward(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        features: dict[str, torch.Tensor],
+        numeric_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         embeddings = [self.embeddings[column](features[column]) for column in self.feature_columns]
-        x = torch.cat(embeddings, dim=1)
+        if self.numeric_features and numeric_features is None:
+            raise ValueError("MLP requires numeric_features")
+        x = torch.cat(append_numeric_features(embeddings, numeric_features), dim=1)
         return self.mlp(x).squeeze(-1)
 
 
@@ -157,16 +194,19 @@ class DcnV2(nn.Module):
         deep_hidden_dims: list[int],
         dropout: float = 0.0,
         output_bias_init: float = 0.0,
+        numeric_features: list[str] | None = None,
     ):
         super().__init__()
         self.feature_columns = list(feature_columns)
+        self.numeric_features = list(numeric_features or [])
+        self.uses_numeric_features = bool(self.numeric_features)
         self.embeddings = nn.ModuleDict(
             {
                 column: nn.Embedding(vocab_sizes[column], embedding_dim)
                 for column in self.feature_columns
             }
         )
-        input_dim = embedding_dim * len(self.feature_columns)
+        input_dim = embedding_dim * len(self.feature_columns) + len(self.numeric_features)
         self.cross_layers = nn.ModuleList(
             [DcnV2CrossLayer(input_dim=input_dim) for _ in range(cross_layers)]
         )
@@ -191,9 +231,15 @@ class DcnV2(nn.Module):
         nn.init.xavier_uniform_(self.output.weight)
         nn.init.constant_(self.output.bias, self.output_bias_init)
 
-    def forward(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        features: dict[str, torch.Tensor],
+        numeric_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         embeddings = [self.embeddings[column](features[column]) for column in self.feature_columns]
-        x0 = torch.cat(embeddings, dim=1)
+        if self.numeric_features and numeric_features is None:
+            raise ValueError("DCN-v2 requires numeric_features")
+        x0 = torch.cat(append_numeric_features(embeddings, numeric_features), dim=1)
         cross = x0
         for layer in self.cross_layers:
             cross = layer(x0, cross)
@@ -320,10 +366,19 @@ class Din(nn.Module):
         return self.logit_from_user_interest(features, user_interest)
 
 
-def build_model(model_config: dict, vocab_sizes: dict[str, int], feature_columns: list[str]) -> nn.Module:
+def build_model(
+    model_config: dict,
+    vocab_sizes: dict[str, int],
+    feature_columns: list[str],
+    numeric_features: list[str] | None = None,
+) -> nn.Module:
     model_name = model_config["name"]
     if model_name == "lr":
-        return FieldWiseLogisticRegression(vocab_sizes=vocab_sizes, feature_columns=feature_columns)
+        return FieldWiseLogisticRegression(
+            vocab_sizes=vocab_sizes,
+            feature_columns=feature_columns,
+            numeric_features=numeric_features,
+        )
     if model_name == "mlp":
         return CtrMLP(
             vocab_sizes=vocab_sizes,
@@ -331,6 +386,7 @@ def build_model(model_config: dict, vocab_sizes: dict[str, int], feature_columns
             embedding_dim=int(model_config["mlp"]["embedding_dim"]),
             hidden_dims=[int(value) for value in model_config["mlp"]["hidden_dims"]],
             dropout=float(model_config["mlp"].get("dropout", 0.0)),
+            numeric_features=numeric_features,
         )
     if model_name == "deepfm":
         return DeepFM(
@@ -349,6 +405,7 @@ def build_model(model_config: dict, vocab_sizes: dict[str, int], feature_columns
             deep_hidden_dims=[int(value) for value in model_config["dcnv2"]["deep_hidden_dims"]],
             dropout=float(model_config["dcnv2"].get("dropout", 0.0)),
             output_bias_init=float(model_config["dcnv2"].get("output_bias_init", 0.0)),
+            numeric_features=numeric_features,
         )
     if model_name == "din":
         return Din(
