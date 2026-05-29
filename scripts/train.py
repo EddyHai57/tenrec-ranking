@@ -25,6 +25,7 @@ def parse_args():
     parser.add_argument("--metadata", help="Override data.metadata_path from config.")
     parser.add_argument("--device", help="Override run.device, e.g. cpu/cuda/auto.")
     parser.add_argument("--model", choices=["lr", "mlp", "deepfm", "dcnv2", "din"], help="Override model.name.")
+    parser.add_argument("--seed", type=int, help="Override run.seed.")
     parser.add_argument("--max-train-rows", type=int, help="Smoke-only head row cap.")
     parser.add_argument("--max-valid-rows", type=int, help="Smoke-only head row cap.")
     parser.add_argument("--overfit", action="store_true", help="Run overfit gate instead of normal training.")
@@ -44,6 +45,8 @@ def apply_overrides(config: dict, args) -> dict:
         updates.setdefault("run", {})["device"] = args.device
     if args.model:
         updates.setdefault("model", {})["name"] = args.model
+    if args.seed is not None:
+        updates.setdefault("run", {})["seed"] = args.seed
     if args.max_train_rows is not None:
         updates.setdefault("data", {})["max_train_rows"] = args.max_train_rows
     if args.max_valid_rows is not None:

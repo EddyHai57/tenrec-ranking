@@ -1,0 +1,36 @@
+run:
+  name: phase_d_lr
+  seed: 20260525
+  output_dir: outputs/runs
+  device: auto
+
+data:
+  metadata_path: outputs/preprocessed/ctr-5580cbc9aa26-stats/metadata.json
+  batch_size: 8192
+  eval_batch_size: 8192
+  loader: tensor
+  note: "Phase D ablation; override metadata_path with --metadata on server"
+
+model:
+  name: lr
+  lr:
+    parameterization: scalar_lookup_sum
+
+train:
+  epochs: 8
+  lr: 0.01
+  weight_decay: 0.0
+  class_reweighting: false
+  resampling: false
+  checkpoint_metric: logloss
+  checkpoint_mode: min
+  patience: 2
+  eval_train_metrics: false
+  eval_test: true
+
+overfit:
+  num_batches: 1
+  batch_size: 64
+  epochs: 120
+  lr: 0.05
+  target_loss: 0.05
