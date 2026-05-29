@@ -1446,3 +1446,101 @@ PCOC 语义说明：
 - 本 run 是 1M source-row smoke，不是 full official-compatible 结果。
 - official-compatible preprocessing 复用 `ctr-972e0dcb2b8d` vocab，是 Phase C 控制变量简化，不是 exact paper replication。
 - 当前 negative sampling 使用 Bernoulli sampling，full run 的负样本数会接近 1:2，但不保证逐行精确等于正样本数的 2 倍。
+
+## 2026-05-29 — Phase C official-compatible FULL and cross-protocol eval
+
+类型：`full validation / multi-seed training / dual-protocol comparison / calibration analysis`
+
+目的：
+
+- 跑 official-compatible full preprocessing：1:2 negative sampling + random 8:1:1 split。
+- 在 official-compatible full 数据上复跑 LR / DeepFM / DCN-v2 3 seeds。
+- 将 official-trained checkpoints 反向评估到 strict test set，量化负采样协议带来的真实分布校准偏移。
+
+Full official preprocessing：
+
+```text
+source_run_id: ctr-972e0dcb2b8d
+official_run_id: ctr-2ce095f2954f-official
+vocab_source: ctr-972e0dcb2b8d (reuse)
+source_label_counts: click=0 91,461,446; click=1 28,880,860
+sample_label_counts: click=0 57,761,210; click=1 28,880,860
+sampled_rows: 86,642,070
+train / valid / test rows: 69,313,656 / 8,664,207 / 8,664,207
+train_base_rate: 0.3333058784260348
+```
+
+服务器验证：
+
+```text
+server HEAD: 988528a
+unittest discover: Ran 31 tests OK
+LR official GPU overfit: final_loss 0.011151575483381748, passed true
+tmux session: phase_c
+summary: outputs/runs/dual_protocol_summary.md
+```
+
+Strict vs official main table：
+
+| model | Strict->Strict AUC | Official->Official AUC | delta AUC | Official->Official PCOC | Official->Strict PCOC | calibration distortion |
+|---|---:|---:|---:|---:|---:|---:|
+| LR | 0.7635861517 ± 0.0001863881 | 0.7866627243 ± 0.0000258788 | +0.0230765726 | 0.9951665986 ± 0.0114494748 | 1.4370512442 ± 0.0173770902 | +0.4370512442 |
+| DeepFM | 0.7729093563 ± 0.0011252317 | 0.7956704545 ± 0.0002898610 | +0.0227610982 | 1.0024864067 ± 0.0130137718 | 1.4507682883 ± 0.0175734933 | +0.4507682883 |
+| DCN-v2 | 0.7732912827 ± 0.0000832072 | 0.7961370652 ± 0.0004120132 | +0.0228457825 | 1.0066661442 ± 0.0150424393 | 1.4562441234 ± 0.0227489716 | +0.4562441234 |
+
+GAUC 对照：
+
+| model | Strict->Strict GAUC | Official->Official GAUC | delta GAUC | Official->Strict GAUC |
+|---|---:|---:|---:|---:|
+| LR | 0.7158774416 ± 0.0000643243 | 0.7253322350 ± 0.0000323270 | +0.0094547934 | 0.7299596097 ± 0.0000338220 |
+| DeepFM | 0.7171410364 ± 0.0002022186 | 0.7331121783 ± 0.0003233102 | +0.0159711419 | 0.7513374411 ± 0.0010496923 |
+| DCN-v2 | 0.7174135194 ± 0.0001828495 | 0.7338023371 ± 0.0006495581 | +0.0163888177 | 0.7545938091 ± 0.0001600766 |
+
+Per-run result：
+
+| model | seed | run_id | official test AUC | official test PCOC | strict test PCOC | epoch wall-clock |
+|---|---:|---|---:|---:|---:|---:|
+| LR | 20260525 | `20260529-112802-lr_official_s20260525-lr` | 0.7866494744 | 0.9820394915 | 1.4171926192 | 413.5s |
+| LR | 42 | `20260529-113658-lr_official_s42-lr` | 0.7866925450 | 1.0003700907 | 1.4444926812 | 412.9s |
+| LR | 2026 | `20260529-114553-lr_official_s2026-lr` | 0.7866461535 | 1.0030902136 | 1.4494684322 | 415.8s |
+| DeepFM | 20260525 | `20260529-115452-deepfm_official_s20260525-deepfm` | 0.7958029830 | 0.9999402686 | 1.4479185600 | 952.8s |
+| DeepFM | 42 | `20260529-121255-deepfm_official_s42-deepfm` | 0.7958703604 | 1.0165850806 | 1.4695924902 | 961.3s |
+| DeepFM | 2026 | `20260529-123105-deepfm_official_s2026-deepfm` | 0.7953380201 | 0.9909338708 | 1.4347938147 | 952.6s |
+| DCN-v2 | 20260525 | `20260529-124906-dcnv2_official_s20260525-dcnv2` | 0.7965637746 | 1.0080206364 | 1.4617341242 | 831.2s |
+| DCN-v2 | 42 | `20260529-130505-dcnv2_official_s42-dcnv2` | 0.7957415178 | 1.0209855308 | 1.4757457098 | 832.0s |
+| DCN-v2 | 2026 | `20260529-132105-dcnv2_official_s2026-dcnv2` | 0.7961059032 | 0.9909922653 | 1.4312525361 | 830.2s |
+
+输出路径：
+
+```text
+outputs/runs/dual_protocol_summary.md
+outputs/runs/20260529-112802-lr_official_s20260525-lr/summary.json
+outputs/runs/20260529-113658-lr_official_s42-lr/summary.json
+outputs/runs/20260529-114553-lr_official_s2026-lr/summary.json
+outputs/runs/20260529-115452-deepfm_official_s20260525-deepfm/summary.json
+outputs/runs/20260529-121255-deepfm_official_s42-deepfm/summary.json
+outputs/runs/20260529-123105-deepfm_official_s2026-deepfm/summary.json
+outputs/runs/20260529-124906-dcnv2_official_s20260525-dcnv2/summary.json
+outputs/runs/20260529-130505-dcnv2_official_s42-dcnv2/summary.json
+outputs/runs/20260529-132105-dcnv2_official_s2026-dcnv2/summary.json
+```
+
+关键观察：
+
+- Official-compatible 协议下，3 个模型的 Official->Official AUC 均比 strict baseline 高约 2.28-2.31pp。
+- Official-trained 模型在 official sampled test 上 PCOC 接近 1.0，说明它们对采样后分布是基本校准的。
+- 同一批 official-trained checkpoints 在 strict test set 上 PCOC 为 1.44-1.46，表示直接部署到真实分布时会高估 CTR 约 44%-46%。
+- Official->Strict PCOC 是 Phase C 的核心证据：official-compatible 负采样协议提高了 AUC 数字，但破坏了无需修正即可部署的概率校准。
+
+已知边界：
+
+- LogLoss 跨 strict / official protocol 不可比，因为 label base rate 不同。
+- 结果不会精确对上 Tenrec 论文 Table 2；seeds、超参、实现细节和 vocab 处理均不同。
+- 本实验是 official-compatible reproduction，不是 exact paper replication。
+- 本服务器当前 active repo outputs 下没有 strict-trained baseline checkpoints，因此 Strict->Official cross-evaluation 跳过。
+- official-compatible preprocessing 复用 `ctr-972e0dcb2b8d` train-only vocab，是控制变量简化；不是论文原始建表流程。
+
+结论：
+
+- Phase C dual-protocol 对照已完成：official-compatible 协议能显著抬高 AUC / GAUC，但 cross-protocol PCOC 显示其概率输出不能直接用于真实分布。
+- strict 协议仍是本项目主线，因为它直接评估真实 row distribution，适合解释工业部署中的概率校准、出价和多目标融合。

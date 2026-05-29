@@ -4,7 +4,7 @@
 
 ## 1. 当前阶段
 
-Phase C dual-protocol 对照实现中。DIN strict full 已完成；official-compatible preprocessing 和 PCOC 已完成本地 smoke，等待 commit / push 后进入服务器 full 3 模型 × 3 seeds。
+Phase C dual-protocol 对照已完成，待记录与提交。official-compatible full 3 模型 × 3 seeds 已跑完，并完成 Official->Strict cross-protocol PCOC 校准评估。
 
 ## 2. 最近完成
 
@@ -16,14 +16,15 @@ Phase C dual-protocol 对照实现中。DIN strict full 已完成；official-com
 - 2026-05-29：完成 DIN 本地实现、focused tests、overfit gate 和 1M hist CPU smoke；完整记录见 `docs/experiment_log.md`。
 - 2026-05-29：完成 DIN strict FULL 3 seeds 服务器训练和 test 评估；完整指标见 `docs/experiment_log.md`。
 - 2026-05-29：启动 Phase C，新增 PCOC 指标和 official-compatible preprocessing，并完成 official 1M smoke 与 LR overfit gate。
+- 2026-05-29：完成 Phase C official-compatible FULL 3 模型 × 3 seeds 和 Official->Strict cross-protocol evaluation；完整指标见 `docs/experiment_log.md`。
 
 ## 3. 下一步
 
-1. 跑完整本地回归测试，确认 PCOC / official preprocessing / torch training 未破坏旧链路。
-2. Eddy 确认后 commit / push Phase C 本地实现。
-3. 服务器 read-only pull 后跑 full official preprocessing 和 LR / DeepFM / DCN-v2 3 seeds。
-4. 生成 `dual_protocol_summary.md`，严格区分 official-compatible reproduction 与 exact paper replication。
-5. 如需讨论原始 CTR 校准失真，新增 original-distribution calibration 指标，不能直接用当前 PCOC 下结论。
+1. 提交 Phase C full 结果文档，保持 `project_summary.md` 不写具体指标数字。
+2. 把 Phase C 结论整理进 `docs/paper_review.md`：official-compatible 提高 AUC，但需要负采样校准。
+3. 设计同数据契约下的 hist ablation：no-hist / target-attention / shuffled-hist。
+4. 规划 Phase D 低泄漏统计特征，优先补足“特征空间 > 模型复杂度”的解释链。
+5. 如需 exact paper replication，另开独立协议，不与 strict mainline 混写。
 
 ## 4. 活跃约束
 

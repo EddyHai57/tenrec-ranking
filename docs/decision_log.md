@@ -554,3 +554,21 @@ static hist user rate: 100.0000000000%
 - 如需证明 official 协议牺牲原始概率校准，需要新增 original-base-rate PCOC、采样率校正后的 PCOC，或单独做 de-biased calibration 分析。
 
 状态：已接受为 Phase C 指标解释边界。
+
+## 2026-05-29 - Phase C 结果确认 strict protocol 继续作为主线
+
+决策：Phase C dual-protocol 对照完成后，项目主线继续使用 strict protocol；official-compatible protocol 作为论文复现对照和负采样校准案例，不替代主线指标。
+
+原因：
+
+- official-compatible 1:2 negative sampling + random split 在 sampled test 上显著抬高 AUC / GAUC。
+- official-trained 模型在 official sampled test 上 PCOC 接近 1.0，但在 strict test 上 PCOC 约 1.44-1.46，说明直接部署到真实分布会系统性高估 CTR。
+- strict protocol 直接评估真实 row distribution，更适合支撑工业语境下的概率校准、出价和多目标融合叙事。
+
+后续约束：
+
+- 后续报告 official-compatible 结果时必须写明它是 reproduction-style 对照，不是 exact paper replication。
+- strict 与 official 的 LogLoss 不做横向优劣比较，因为 label base rate 不同。
+- 如果需要 exact paper replication，应单独开协议和日志，不与 strict mainline 混写。
+
+状态：已接受为 Phase C 结论。

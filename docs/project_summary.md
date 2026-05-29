@@ -48,10 +48,11 @@
 - 完成 strict full 多 seed 复跑（3 seeds × 4 models），LR→DCN-v2 AUC 阶梯统计稳定，多 seed 标准差小于 0.001；完整指标见 `docs/experiment_log.md`。
 - `hist_1..hist_10` 在 strict split 下完成泄漏闸门验证（PASS），具备进入 DIN 序列建模的前置条件。
 - DIN strict full multi-seed 完成（3 seeds），相对 4 模型 strict baseline 取得统计显著提升。
+- Phase C dual-protocol 对照完成：official-compatible 负采样协议提高 sampled-test AUC，但 cross-protocol PCOC 显示其直接用于真实分布会产生系统性校准偏移。
 
 ## 尚未验证
 
 - 尚未证明 Tenrec 原始 `hist_1` 到 `hist_10` 构造严格只使用 target event 之前的历史；当前只完成 strict split 下的 train hist -> valid/test target 直接 overlap 闸门验证。
 - 尚未做 full strict baseline 的系统性超参调优。
-- 尚未完成 Phase C dual-protocol 对照设计和同数据契约下的 DIN 消融实验。
-- 尚未实现 official-compatible reproduction protocol；是否加入下一阶段等待 Eddy 和 Opus 讨论后决定。
+- 尚未完成同数据契约下的 DIN 消融实验。
+- 尚未实现 exact paper replication；当前已完成的是 official-compatible reproduction。
