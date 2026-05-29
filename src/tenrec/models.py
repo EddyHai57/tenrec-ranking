@@ -261,9 +261,12 @@ class Din(nn.Module):
         dropout: float = 0.0,
         output_bias_init: float = 0.0,
         padding_index: int = 1,
+        numeric_features: list[str] | None = None,
     ):
         super().__init__()
         self.feature_columns = list(feature_columns)
+        self.numeric_features = list(numeric_features or [])
+        self.uses_numeric_features = bool(self.numeric_features)
         self.embedding_dim = int(embedding_dim)
         self.padding_index = int(padding_index)
         self.target_embedding = nn.Embedding(vocab_sizes["item_id"], embedding_dim)
@@ -283,7 +286,7 @@ class Din(nn.Module):
             dropout=dropout,
             output_dim=1,
         )
-        deep_input_dim = embedding_dim * (2 + len(self.profile_columns))
+        deep_input_dim = embedding_dim * (2 + len(self.profile_columns)) + len(self.numeric_features)
         self.deep = make_mlp(
             input_dim=deep_input_dim,
             hidden_dims=deep_hidden_dims,
@@ -346,24 +349,31 @@ class Din(nn.Module):
         self,
         features: dict[str, torch.Tensor],
         user_interest: torch.Tensor,
+        numeric_features: torch.Tensor | None = None,
     ) -> torch.Tensor:
         target_emb = self.target_embedding(features["item_id"])
         profile_embs = [
             self.profile_embeddings[column](features[column])
             for column in self.profile_columns
         ]
-        x = torch.cat([user_interest, target_emb] + profile_embs, dim=1)
+        x = torch.cat(
+            append_numeric_features([user_interest, target_emb] + profile_embs, numeric_features),
+            dim=1,
+        )
         return self.deep(x).squeeze(-1)
 
     def forward(
         self,
         features: dict[str, torch.Tensor],
         sequence_features: dict[str, torch.Tensor] | None = None,
+        numeric_features: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if sequence_features is None:
             raise ValueError("DIN forward requires sequence_features")
+        if self.uses_numeric_features and numeric_features is None:
+            raise ValueError("DIN requires numeric_features")
         user_interest = self.user_interest_vector(features, sequence_features)
-        return self.logit_from_user_interest(features, user_interest)
+        return self.logit_from_user_interest(features, user_interest, numeric_features)
 
 
 def build_model(
@@ -419,5 +429,6 @@ def build_model(
             dropout=float(model_config["din"].get("dropout", 0.0)),
             output_bias_init=float(model_config["din"].get("output_bias_init", 0.0)),
             padding_index=int(model_config["din"].get("padding_index", 1)),
+            numeric_features=numeric_features,
         )
     raise ValueError(f"Unsupported model name: {model_name}")

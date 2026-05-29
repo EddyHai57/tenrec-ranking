@@ -166,7 +166,8 @@ def iter_eval_batches(
 
 def model_logits(model, batch: dict) -> torch.Tensor:
     if getattr(model, "requires_sequence_features", False):
-        return model(batch["features"], batch.get("sequence_features"))
+        numeric = batch.get("numeric_features") if getattr(model, "uses_numeric_features", False) else None
+        return model(batch["features"], batch.get("sequence_features"), numeric)
     if getattr(model, "uses_numeric_features", False):
         return model(batch["features"], batch.get("numeric_features"))
     return model(batch["features"])

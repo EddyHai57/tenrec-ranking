@@ -101,6 +101,27 @@ class DinTest(unittest.TestCase):
         logits = self.model(self.features(), self.sequence())
         self.assertEqual(tuple(logits.shape), (2,))
 
+    def test_forward_with_numeric_features_pipeline(self):
+        model = build_model(
+            {
+                "name": "din",
+                "din": {
+                    "embedding_dim": 8,
+                    "attention_hidden_dims": [16, 8],
+                    "deep_hidden_dims": [32, 16],
+                    "dropout": 0.0,
+                    "output_bias_init": -1.0,
+                    "padding_index": 1,
+                },
+            },
+            vocab_sizes=self.vocab_sizes,
+            feature_columns=self.feature_columns,
+            numeric_features=["f1", "f2", "f3", "f4", "f5", "f6"],
+        )
+        numeric = torch.zeros([2, 6])
+        logits = model(self.features(), self.sequence(), numeric)
+        self.assertEqual(tuple(logits.shape), (2,))
+
 
 if __name__ == "__main__":
     unittest.main()
