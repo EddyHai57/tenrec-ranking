@@ -49,7 +49,8 @@
 - `hist_1..hist_10` 在 strict split 下完成泄漏闸门验证（PASS），具备进入 DIN 序列建模的前置条件。
 - DIN strict full multi-seed 完成（3 seeds），相对 4 模型 strict baseline 取得统计显著提升。
 - Phase C dual-protocol 对照完成：official-compatible 负采样协议提高 sampled-test AUC，但 cross-protocol PCOC 显示其直接用于真实分布会产生系统性校准偏移。
-- Phase D feature ablation 完成（LR / DCN-v2 / DIN × 3 seeds，6 个 leakage-safe 统计特征）：DCN-v2 取得统计显著 AUC 提升，DIN 增量最小印证 hist attention 与统计特征信息重叠；完整指标见 experiment_log，test PCOC 偏移见 ISSUE-20260530-001。
+- Phase D feature ablation 完成（LR / DCN-v2 / DIN × 3 seeds，6 个 leakage-safe 统计特征），DIN 增量最小印证 hist attention 与统计特征信息重叠；test PCOC 偏移见 ISSUE-20260530-001。
+- **2026-05-30 严格 ablation 重训修正**：在同一 base run `ctr-972e0dcb2b8d` 上重训 no-stats baseline 后，统计特征增益不再统计显著（LR / DCN-v2 ΔAUC 均 < 3σ）。原记录的"DCN-v2 统计显著提升"系 baseline 使用了不同 preprocessing run 所致，严格对照后**该结论撤回**。配套 DCN-v2 小范围 HP sweep 显示模型容量仍有边际空间（embed 16→32）。结论：当前 5 ID 特征空间下，特征工程与模型容量均只剩小幅增益，瓶颈在特征信息量。完整指标见 experiment_log。
 
 ## 尚未验证
 

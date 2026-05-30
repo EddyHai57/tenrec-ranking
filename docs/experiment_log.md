@@ -1717,3 +1717,97 @@ overfit sanity: LR final_loss=0.0362 PASS；DIN final_loss=0.0 PASS
 - Phase B baseline 无 PCOC 数据（PCOC 在 Phase C 才实现），无法直接对照 PCOC 偏移是否为 stats 特征引入。
 - leakage-safe 已通过 Phase D streaming OOF 闸门验证，但 OOF shift 是独立校准问题，见 ISSUE-20260530-001。
 - 服务器配置与 Phase B 一致（RTX 4090 D，CUDA，tensor loader，batch 8192）。
+
+---
+
+## 2026-05-30 — Phase D 严格 ablation 重训 + DCN-v2 HP sweep
+
+类型：`full training / strict protocol / 严格 ablation / hyperparameter sweep`
+
+目的：
+
+- 修补原 Phase D ablation 归因瑕疵：原 LR/DCN-v2 baseline 使用无 hist 的 `ctr-3999a64f6fad`，+stats 使用 `ctr-5580cbc9aa26-stats`（source `ctr-972e0dcb2b8d`）。本轮在**同一 base run** `ctr-972e0dcb2b8d` 上重训 no-stats baseline，做严格同 base run 对照。
+- DCN-v2 小范围 HP sweep，验证"特征空间 vs 模型容量"哪个是当前瓶颈。
+
+设置：
+
+```text
+server: autodl (connect.bjb1.seetacloud.com, RTX 4090, CUDA)
+git commit: 292dc44
+nostats metadata: ctr-972e0dcb2b8d/metadata_server.json (无 numeric_features)
++stats metadata: ctr-5580cbc9aa26-stats/metadata.json (6 numeric_features)
+loader: tensor, batch 8192
+ablation seeds: 20260525, 42, 2026
+ablation config: configs/phase_d_lr_nostats_full.yaml, configs/phase_d_dcnv2_nostats_full.yaml
+sweep: DCN-v2, seed 20260525, eval_test=false (valid-only 选优), 临时 config 在服务器 /root/autodl-tmp/sweep/
+```
+
+### 严格 ablation per-run（no-stats, ctr-972e0dcb2b8d）
+
+| model | seed | test AUC | test GAUC | test LogLoss | test PCOC |
+|---|---:|---:|---:|---:|---:|
+| LR | 20260525 | 0.7637885 | 0.7158167 | 0.4521773 | 1.1321 |
+| LR | 42 | 0.7640577 | 0.7161505 | 0.4522791 | 1.1389 |
+| LR | 2026 | 0.7635512 | 0.7156675 | 0.4517833 | 1.1173 |
+| DCN-v2 | 20260525 | 0.7741561 | 0.7178166 | 0.4370190 | 1.1465 |
+| DCN-v2 | 42 | 0.7747460 | 0.7181026 | 0.4358235 | 1.1352 |
+| DCN-v2 | 2026 | 0.7725378 | 0.7168080 | 0.4372329 | 1.1275 |
+
+### 严格对照（同 base run 972：nostats vs +stats）
+
+| model | nostats AUC | +stats AUC | ΔAUC | 3σ 判定 |
+|---|---|---|---|---|
+| LR | 0.7637991 ± 0.0002535 | 0.7647187 ± 0.0004423 | +0.0009195 | not sig（ratio 0.60） |
+| DCN-v2 | 0.7738133 ± 0.0011433 | 0.7748127 ± 0.0002669 | +0.0009994 | not sig（ratio 0.28） |
+
+（+stats 数字来自本文件上一节 Phase D，metadata `ctr-5580cbc9aa26-stats`；ratio = ΔAUC /（3 × 合成 std））
+
+### DCN-v2 HP sweep（valid-only, +stats, seed 20260525）
+
+当前超参 baseline（embed 16, lr 1e-3, cross 2）valid AUC = 0.777226。
+
+| embed | lr | cross | valid AUC | valid LogLoss |
+|---:|---:|---:|---:|---:|
+| 16 | 1e-3 | 3 | 0.777968 | 0.478671 |
+| 16 | 5e-4 | 2 | 0.777648 | 0.478696 |
+| 16 | 5e-4 | 3 | 0.777618 | 0.478760 |
+| 32 | 1e-3 | 2 | 0.778104 | 0.479169 |
+| 32 | 1e-3 | 3 | 0.778668 | 0.478146 |
+| 32 | 5e-4 | 2 | 0.778230 | 0.478260 |
+| **32** | **5e-4** | **3** | **0.778745** | **0.477664** |
+
+趋势：`embed 32` 全面优于 `16`；`cross 3` 略优于 `2`。
+
+### Sweep-best test 复核（embed 32, lr 5e-4, cross 3, seed 20260525）
+
+| metric | sweep-best | 当前超参 +stats（s20260525） | Δ |
+|---|---:|---:|---:|
+| test AUC | 0.7753991 | 0.7746913 | +0.0007078 |
+| test GAUC | 0.7197241 | — | — |
+| test LogLoss | 0.4351703 | — | — |
+| test PCOC | 1.0991 | — | — |
+
+valid 上 +0.0015，test 上 +0.0007（valid 优势部分迁移到 test）。
+
+### 关键结论
+
+1. **统计特征增益在严格同 base run 对照下不再统计显著**：LR ΔAUC +0.00092（ratio 0.60），DCN-v2 ΔAUC +0.00100（ratio 0.28），均 < 3σ。
+2. **原 Phase D 的"DCN-v2 统计显著提升"（ratio 1.81）不成立**：主因是原 baseline 用了不同 base run（`ctr-3999a64f6fad`，无 hist 列），其 DCN-v2 seed std 仅约 0.00008；严格重训后 nostats DCN-v2 seed std 增至 0.00114（s2026 test AUC 0.7725 偏低，三 seed best_epoch 均=1，非早停异常，是真实方差），显著性被削弱。
+3. **调参显示模型容量仍有边际空间**："特征 > 模型"不成立：embed 16→32 带来 valid +0.0015 / test +0.0007，量级与统计特征增益相近。当前 5 ID 特征空间下，特征工程与模型容量都只剩小幅增益。
+
+### 已知限制
+
+- sweep 仅 seed 20260525 单 seed，valid 选优后 test 复核一次，未做多 seed；test +0.0007 需多 seed 确认才稳。
+- 首次 retest 因数据盘 100% 满，checkpoint 保存失败崩溃；清理 `train_shuffled`（7.3G）+ 各 run `checkpoints/`（18G）后重跑成功（git 292dc44）。
+- checkpoints 已删（可重训复现，指标级一致），所有 summary.json / metrics.jsonl 指标证据保留。
+- sweep 临时 config 在服务器 `/root/autodl-tmp/sweep/`（server-only，不进 git）。
+- 本轮在 autodl 服务器（RTX 4090，用户自有 GPU 资源）运行，符合 AGENTS §10 服务器训练边界。
+
+### 输出路径
+
+```text
+outputs/runs/20260530-175603-phase_d_lr_nostats-lr/ 等 6 个 ablation run
+outputs/runs/*sweep_dcnv2_*  7 个 sweep run
+outputs/runs/20260530-210121-sweep_best_retest_e32_lr0.0005_c3-dcnv2/  retest
+（均在服务器，不进 git；checkpoints 已清理）
+```
