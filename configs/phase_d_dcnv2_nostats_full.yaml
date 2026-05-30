@@ -1,0 +1,40 @@
+run:
+  name: phase_d_dcnv2_nostats
+  seed: 20260525
+  output_dir: outputs/runs
+  device: auto
+
+data:
+  metadata_path: outputs/preprocessed/ctr-972e0dcb2b8d/metadata.json
+  batch_size: 8192
+  eval_batch_size: 8192
+  loader: tensor
+  note: "Phase D strict ablation: no-stats baseline on same base run ctr-972e0dcb2b8d (has hist cols, no numeric_features). Override metadata_path with --metadata (metadata_server.json) on server."
+
+model:
+  name: dcnv2
+  dcnv2:
+    embedding_dim: 16
+    cross_layers: 2
+    deep_hidden_dims: [64, 32]
+    dropout: 0.0
+    output_bias_init: train_base_rate
+
+train:
+  epochs: 8
+  lr: 0.001
+  weight_decay: 0.0
+  class_reweighting: false
+  resampling: false
+  checkpoint_metric: logloss
+  checkpoint_mode: min
+  patience: 2
+  eval_train_metrics: false
+  eval_test: true
+
+overfit:
+  num_batches: 1
+  batch_size: 64
+  epochs: 160
+  lr: 0.01
+  target_loss: 0.05
