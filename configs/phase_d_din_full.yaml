@@ -1,0 +1,42 @@
+run:
+  name: phase_d_din
+  seed: 20260525
+  output_dir: outputs/runs
+  device: auto
+
+data:
+  metadata_path: outputs/preprocessed/ctr-5580cbc9aa26-stats/metadata.json
+  loader: tensor
+  batch_size: 8192
+  eval_batch_size: 8192
+  train_shuffle: gpu_randperm
+  note: "Phase D DIN full (hist + stats numeric_features); override metadata_path with --metadata on server"
+
+model:
+  name: din
+  din:
+    embedding_dim: 16
+    attention_hidden_dims: [64, 32]
+    deep_hidden_dims: [256, 128, 64]
+    dropout: 0.1
+    output_bias_init: train_base_rate
+    padding_index: 1
+
+train:
+  epochs: 10
+  lr: 0.001
+  weight_decay: 0.0
+  class_reweighting: false
+  resampling: false
+  checkpoint_metric: logloss
+  checkpoint_mode: min
+  patience: 3
+  eval_train_metrics: false
+  eval_test: true
+
+overfit:
+  num_batches: 1
+  batch_size: 64
+  epochs: 240
+  lr: 0.01
+  target_loss: 0.05
