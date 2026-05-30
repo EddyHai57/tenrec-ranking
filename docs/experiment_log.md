@@ -1639,3 +1639,81 @@ Full unittest discover: Ran 36 tests OK
 - `scripts/preprocess_ctr_stats.py` 当前是本地 1M 原型，读取 split CSV 到内存；full run 前需要改成 streaming / chunked 实现。
 - `numeric_features` 当前接入 LR / MLP / DCN-v2，未接入 DeepFM / DIN。
 - 当前只验证 6 个统计特征；是否进入 full 需要 Eddy review 后确认。
+
+---
+
+## 2026-05-30 — Phase D feature ablation FULL（stats features × 3 模型 × 3 seeds）
+
+类型：`full training / strict protocol / feature ablation / multi-seed`
+
+目的：
+
+- 验证 6 个 leakage-safe 统计特征（item/user/category/user_category hist CTR + user/item log impressions）对 LR / DCN-v2 / DIN 的增量收益。
+- 与 Phase B / Phase D DIN strict FULL baseline 做 multi-seed ablation 对照（有统计特征 vs 无）。
+
+设置：
+
+```text
+server: tenrec-seetacloud (RTX 4090 D, CUDA)
+repo: /root/autodl-tmp/tenrec-ranking
+git commit: ca84c9f
+metadata (with stats): ctr-5580cbc9aa26-stats
+  source: ctr-972e0dcb2b8d
+  alpha: 20.0, folds: 5, seed: 20260525, mode: oof
+  preprocessing_version: stats_features_streaming_v0.2
+  peak RSS (full run): 6056.5 MiB
+loader: tensor
+seeds: 20260525, 42, 2026
+LR:     lr=0.01,  batch=8192, epochs=8,  patience=2
+DCN-v2: lr=0.001, batch=8192, epochs=8,  patience=2, embed=16, cross=2, deep=[64,32]
+DIN:    lr=0.001, batch=8192, epochs=10, patience=3, embed=16, attention=[64,32], deep=[256,128,64]
+eval_test: true
+overfit sanity: LR final_loss=0.0362 PASS；DIN final_loss=0.0 PASS
+```
+
+### Per-run result
+
+| model | seed | run_id | best_epoch | test AUC | test GAUC | test LogLoss | test PCOC |
+|---|---:|---|---:|---:|---:|---:|---:|
+| LR | 20260525 | `phase_d_lr_s20260525` | 1 | 0.7645737280022618 | 0.7154614691956143 | 0.44754566714889327 | 1.1078951992751322 |
+| LR | 42 | `phase_d_lr_s42` | 1 | 0.7653180861556218 | 0.7156271147702024 | 0.445951967728726 | 1.0921349200021577 |
+| LR | 2026 | `phase_d_lr_s2026` | 1 | 0.764264146116122 | 0.7154940882119841 | 0.44651461478737514 | 1.0883366503986927 |
+| DCN-v2 | 20260525 | `phase_d_dcnv2_s20260525` | 1 | 0.7746912599562037 | 0.7193033069438363 | 0.43530436375688963 | 1.0974401367878175 |
+| DCN-v2 | 42 | `phase_d_dcnv2_s42` | 1 | 0.7751829667582282 | 0.7197010018642226 | 0.43412610878317026 | 1.0603629338770457 |
+| DCN-v2 | 2026 | `phase_d_dcnv2_s2026` | 1 | 0.7745638477423147 | 0.7189165199650349 | 0.4343867367936533 | 1.0753589427324521 |
+| DIN | 20260525 | `phase_d_din_s20260525` | 1 | 0.7775936326647042 | 0.7217422493285689 | 0.43325513065103166 | 1.1160142510584707 |
+| DIN | 42 | `phase_d_din_s42` | 1 | 0.7788829030387028 | 0.7222882736543772 | 0.4315861421820004 | 1.1015035054194233 |
+| DIN | 2026 | `phase_d_din_s2026` | 1 | 0.7774301718258787 | 0.7216320398584635 | 0.43314129298168697 | 1.0977522851688295 |
+
+### Mean ± std（+stats）
+
+| model | test AUC mean ± std | test GAUC mean ± std | test LogLoss mean ± std | test PCOC mean |
+|---|---|---|---|---|
+| LR | 0.7647186534 ± 0.0004423045 | 0.7155275574 ± 0.0000716461 | 0.4466707499 ± 0.0006599258 | 1.0961 |
+| DCN-v2 | 0.7748126915 ± 0.0002669411 | 0.7193069429 ± 0.0003202737 | 0.4346057364 ± 0.0005053328 | 1.0777 |
+| DIN | 0.7779689025 ± 0.0006497320 | 0.7218875209 ± 0.0002869246 | 0.4326608553 ± 0.0007613566 | 1.1051 |
+
+### Ablation 对照（vs Phase B / DIN Phase B baseline）
+
+| model | base AUC | +stats AUC | ΔAUC | sig（3σ） | base GAUC | +stats GAUC | ΔGAUC | base LogLoss | +stats LogLoss | ΔLogLoss |
+|---|---|---|---|---|---|---|---|---|---|---|
+| LR | 0.7635861517±0.0001863881 | 0.7647186534±0.0004423045 | +0.0011325017 | no（ratio=0.79） | 0.7158774416 | 0.7155275574 | −0.0003498842 | 0.4524243393 | 0.4466707499 | −0.0057535894 |
+| DCN-v2 | 0.7732912827±0.0000832072 | 0.7748126915±0.0002669411 | +0.0015214088 | **yes（ratio=1.81）** | 0.7174135194 | 0.7193069429 | +0.0018934235 | 0.4367884263 | 0.4346057364 | −0.0021826899 |
+| DIN | 0.7776414651±0.0003614382 | 0.7779689025±0.0006497320 | +0.0003274374 | no（ratio=0.15） | 0.7192751046 | 0.7218875209 | +0.0026124163 | 0.4345373488 | 0.4326608553 | −0.0018764935 |
+
+### 关键观察
+
+1. **DCN-v2 ΔAUC 唯一统计显著**（ratio=1.81 > 1，ΔAUC=+0.0015）：cross network 与统计特征的线性交互形成协同效应，是本次 ablation 收益最清晰的证据。
+2. **DIN 增量最小**（ΔAUC=+0.0004，not sig）：hist attention 机制已隐式捕获 item/user 的历史行为强度，统计特征与其存在信息重叠，边际增益被大幅 squeeze。
+3. **AUC↑ 与 LogLoss↓ 方向一致**：三模型全部满足，说明统计特征改善了条件预测，而不只是重新排序。LR LogLoss 改善最大（−0.0057），说明平滑 CTR 编码对线性模型的校准贡献显著。
+4. **test PCOC 系统性 > 1（8–11%）**：见 ISSUE-20260530-001。假设为 OOF-vs-full-train 特征分布偏移，AUC/GAUC 不受影响，但直接部署需校准头。
+
+### 已知限制
+
+- 3 seeds、固定超参，未做 HP search；DCN-v2 / DIN 架构与 Phase B 相同，未单独调优。
+- LR / DCN-v2 的 Phase B baseline 使用 `ctr-3999a64f6fad`（无 hist 列）；Phase D +stats 使用 `ctr-5580cbc9aa26-stats`（source=`ctr-972e0dcb2b8d`，含 hist 列）。两 run 的 split 切分规则一致、vocab 同为 train-only，但 preprocessing 版本不同。ablation ΔAUC 可主要归因为统计特征，但严格说"vocab 构造源是否完全等价"未做精确验证。
+- DIN 的 Phase B baseline（`ctr-972e0dcb2b8d`）与 Phase D +stats 共享 source run，vocab 等价性最强。
+- 严格 ablation 的理想做法是在同一 base run 上重训 baseline，本轮接受这一简化。
+- Phase B baseline 无 PCOC 数据（PCOC 在 Phase C 才实现），无法直接对照 PCOC 偏移是否为 stats 特征引入。
+- leakage-safe 已通过 Phase D streaming OOF 闸门验证，但 OOF shift 是独立校准问题，见 ISSUE-20260530-001。
+- 服务器配置与 Phase B 一致（RTX 4090 D，CUDA，tensor loader，batch 8192）。

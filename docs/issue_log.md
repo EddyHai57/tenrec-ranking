@@ -750,3 +750,66 @@ Ran 3 tests OK
 ### 状态
 
 Fixed for local 1M prototype。Full run 前仍需改成 streaming / chunked 版本，当前脚本会把 train/valid/test rows 读入内存。
+
+---
+
+## ISSUE-20260530-001 — Phase D stats features 引入 test PCOC 偏移（OOF-vs-full-train shift）
+
+### 日期
+
+2026-05-30
+
+### 类型
+
+calibration / feature engineering
+
+### 现象
+
+Phase D ablation 三模型 test PCOC 全部 > 1.0：
+
+- LR +stats：1.1079、1.0921、1.0883（mean ≈ 1.096）
+- DCN-v2 +stats：1.0974、1.0604、1.0754（mean ≈ 1.078）
+- DIN +stats：1.1160、1.1015、1.0978（mean ≈ 1.105）
+
+模型系统性高估真实 CTR 约 8–11%。
+
+### 证据
+
+- 三模型 9 个 run 的 summary.json test 段（完整数字见 docs/experiment_log.md Phase D ablation 章节）
+- LR 在 Phase D 没有 output_bias_init，但 PCOC 仍 ≈ 1.09 → 偏移来源不是 bias init，而是统计特征本身
+- Phase B baseline 无 PCOC 数据（PCOC 指标在 Phase C 才实现，Phase B 运行时未记录）；无法直接对照定性
+
+### 根因或当前假设
+
+**OOF-vs-full-train 特征分布偏移（假设）**：
+
+- train 统计特征：5-fold OOF（扣除自己 fold），每个特征值系统性"偏低"
+- valid/test 统计特征：全量 train 统计（包含所有 train 行），系统性"偏高"
+- 模型学到"低统计值 → 输出约 24%"，到 test 看到偏高统计值 → 输出 > 24% → PCOC > 1
+- 这是 Kaggle / 工业 target encoding 的已知副作用（"OOF shift"）
+
+### 影响
+
+- AUC / GAUC 不受影响（ranking 仍正确）
+- LogLoss 在 +stats 下仍下降（可解释：整体校准虽偏，但条件预测仍更准）
+- **直接部署会高估 CTR 约 8–11%**，下游出价 / 融合需修正（常见做法：训练后做 isotonic regression 或 Platt scaling 校准头）
+- 与 Phase C 的 cross-protocol PCOC ≈ 1.45 是不同机制（C 是负采样导致，D 是 OOF shift 导致）
+
+### 修复或 workaround（未实施）
+
+候选方案：
+
+1. valid/test 也用 K-fold OOF（对齐 train，代价是评估一致性）
+2. 训练时也用 full-train 统计（放弃 OOF，接受微弱泄漏）
+3. 训练后加 isotonic regression 校准头，只调整概率不影响 ranking
+4. 显式建模：把 fold 标记当 train 特征喂给模型
+
+### 验证（待做）
+
+- Phase B baseline 没有 PCOC 数据，无法直接对照定性
+- 后续如果实施任一修复方案，需 ablation 验证 PCOC 是否回到 ≈ 1.0
+- 同时验证 AUC / LogLoss 不被修复方案显著破坏
+
+### 状态
+
+Open（已知机制，Phase D 收口阶段不阻塞 commit；未来如继续做 stats 特征，必须先处理）

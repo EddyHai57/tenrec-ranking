@@ -49,6 +49,7 @@
 - `hist_1..hist_10` 在 strict split 下完成泄漏闸门验证（PASS），具备进入 DIN 序列建模的前置条件。
 - DIN strict full multi-seed 完成（3 seeds），相对 4 模型 strict baseline 取得统计显著提升。
 - Phase C dual-protocol 对照完成：official-compatible 负采样协议提高 sampled-test AUC，但 cross-protocol PCOC 显示其直接用于真实分布会产生系统性校准偏移。
+- Phase D feature ablation 完成（LR / DCN-v2 / DIN × 3 seeds，6 个 leakage-safe 统计特征）：DCN-v2 取得统计显著 AUC 提升，DIN 增量最小印证 hist attention 与统计特征信息重叠；完整指标见 experiment_log，test PCOC 偏移见 ISSUE-20260530-001。
 
 ## 尚未验证
 
