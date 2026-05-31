@@ -1811,3 +1811,106 @@ outputs/runs/*sweep_dcnv2_*  7 个 sweep run
 outputs/runs/20260530-210121-sweep_best_retest_e32_lr0.0005_c3-dcnv2/  retest
 （均在服务器，不进 git；checkpoints 已清理）
 ```
+
+---
+
+## 2026-05-31 — 过夜完整 HP 网格 + 调参 test 收尾（多 seed）
+
+类型：`full training / hyperparameter grid / multi-seed test confirmation`
+
+目的：
+
+- 把 DCN-v2 网格从初版 7 组合扩到完整 36 组合（加 embed 64、lr 2e-4、deep[128,64]），并首次对 DIN 做 8 组合调参。
+- 对 valid 选出的最优配置补 test + 3 seed 确认**稳定性**（seed 用于方差确认，**非选优**）。
+
+设置：
+
+```text
+server: autodl bjb2 (RTX 4090 D, CUDA), git 9130f1e
+metadata: ctr-5580cbc9aa26-stats (+stats)
+loader: tensor, batch 8192
+grid: seed 20260525, eval_test=false (valid-only 选优)
+finaltest: 最优配置 × seed{20260525,42,2026}, eval_test=true
+每 run 跑完删 checkpoint（防 50G 数据盘满）
+```
+
+### DCN-v2 完整网格（36 组合，valid）
+
+网格：`embed{16,32,64} × lr{1e-3,5e-4,2e-4} × cross{2,3} × deep{[64,32],[128,64]}`
+
+top 5（valid AUC）：
+
+| 配置 | valid AUC | valid LogLoss |
+| --- | ---: | ---: |
+| e32_lr5e-4_c3 | 0.778422 | 0.477541 |
+| e64_lr2e-4_c3 | 0.778366 | 0.476800 |
+| e64_lr5e-4_c3 | 0.778354 | 0.477719 |
+| e32_lr2e-4_c2_deep128 | 0.778190 | 0.477183 |
+| e32_lr2e-4_c3 | 0.778161 | 0.476965 |
+
+当前超参 baseline `e16_lr1e-3_c2` = 0.777226；最差 `e16_lr1e-3_c3` = 0.776996。
+
+趋势：
+
+- embed 32/64 > 16（容量有用，但 64 vs 32 收益饱和）
+- lr 偏小（5e-4 / 2e-4）+ cross 3 占优（呼应 best_epoch=1，默认 lr 偏大）
+- **deep[128,64] 无明显增益**（与 deep[64,32] 混杂在榜单中部）
+- 全 36 组合跨度仅 0.7770–0.7784（0.0014），增益落在 GPU 抖动量级
+
+### DIN 调参网格（8 组合，首次，valid）
+
+网格：`embed{16,32} × lr{1e-3,5e-4} × dropout{0,0.1}`
+
+| 配置 | valid AUC | valid LogLoss |
+| --- | ---: | ---: |
+| e32_lr5e-4_do0 | 0.781058 | 0.474965 |
+| e16_lr5e-4_do0.1 | 0.780973 | 0.474598 |
+| e32_lr5e-4_do0.1 | 0.780835 | 0.475147 |
+| e32_lr1e-3_do0.1 | 0.780643 | 0.474857 |
+| e16_lr5e-4_do0 | 0.780264 | 0.475773 |
+| e16_lr1e-3_do0 | 0.780170 | 0.476351 |
+| e16_lr1e-3_do0.1 | 0.780144 | 0.475182 |
+| e32_lr1e-3_do0 | 0.779948 | 0.477120 |
+
+趋势：lr 5e-4 > 1e-3（一致）；embed 32 略优；dropout 影响小。
+
+### 调参最优 test 收尾（3 seed，eval_test=true）
+
+| 模型 | 配置 | test AUC mean ± std | test GAUC | test LogLoss |
+| --- | --- | ---: | ---: | ---: |
+| DCN-best | e32_lr5e-4_c3 | 0.775674 ± 0.000598 | 0.720137 | 0.434279 |
+| DIN-best | e32_lr5e-4_do0 | 0.778579 ± 0.000156 | 0.721913 | 0.432369 |
+
+per-seed test AUC：
+
+```text
+DCN-best: 0.775582 / 0.776449 / 0.774991  (s20260525/42/2026)
+DIN-best: 0.778457 / 0.778799 / 0.778482
+```
+
+对照当前超参 +stats（上一节 Phase D）：
+
+- DCN-v2 +stats 当前超参 test 0.7748127 → 调参 best **+0.00086**
+- DIN +stats 当前超参 test 0.7779689 → 调参 best **+0.00061**
+
+### 关键结论
+
+1. 调参 test 增益经 3 seed 坐实：DCN +0.0009、DIN +0.0006，**真实但很小**，与"模型容量小幅增益、瓶颈在特征"一致。
+2. **DIN-best（0.7786）仍明显高于 DCN-best（0.7757），差 0.0029**，远大于两者 std → hist 序列价值不被调参改变。
+3. **lr 5e-4 是两模型一致的可复现发现**（向下调优于默认 1e-3，呼应 best_epoch=1）。
+4. seed std 极小（DIN 0.00016），确认结论稳定性。
+
+### 已知限制
+
+- 网格为单 seed（20260525）valid 选优，仅最优配置做 3 seed test；非全网格多 seed。
+- DIN 调参网格用于找最优超参，**不是 hist ablation**（hist ablation 见后续 hist_mode 三档实验）。
+- GPU 抖动约 0.0003（bjb1→bjb2 换机），小于多数网格内差异。
+- seed 用于确认稳定性 / 方差，不用于选优。
+
+### 输出
+
+```text
+outputs/runs/*grid_dcnv2*（36）、*grid_din*（8）、*finaltest_{dcn,din}_best_s*（6）
+server-only configs: /root/autodl-tmp/grid/、/root/autodl-tmp/finaltest/
+（均在服务器，不进 git；checkpoints 已清理）
+```

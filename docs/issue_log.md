@@ -810,6 +810,31 @@ Phase D ablation 三模型 test PCOC 全部 > 1.0：
 - 后续如果实施任一修复方案，需 ablation 验证 PCOC 是否回到 ≈ 1.0
 - 同时验证 AUC / LogLoss 不被修复方案显著破坏
 
+### 2026-05-31 分布判定（不训练，直接对比 materialized 数据）
+
+方法：对 6 个 numeric 特征用 stride 均匀采样，对比 train（OOF）/ valid / test（full-train lookup）的标准化 mean（train 基准≈0，valid/test 偏离量即 shift）。
+
+| 特征 | valid | test | 偏移 |
+|---|---:|---:|---|
+| user_hist_ctr | 0.000 | 0.000 | 无 |
+| user_category_hist_ctr | 0.007 | 0.001 | 无 |
+| item_log_impressions | 0.007 | -0.028 | 小 |
+| category_hist_ctr | -0.024 | -0.051 | 小 |
+| item_hist_ctr | 0.064 | -0.010 | 小 |
+| user_log_impressions | 0.316 | 0.316 | **大 +0.32σ** |
+
+判定：
+
+- **OOF-vs-full-train shift 假设证伪**：CTR 类 target-encoded 特征（含 user_hist_ctr）的 train OOF 与 valid/test full-train lookup 分布几乎一致（mean 偏移 < 0.07σ），不存在假设中"train 系统偏低、valid/test 系统偏高"的现象。
+- **真正的单一显著偏移是 user_log_impressions（count 类，非 target-encoded）**，valid/test 系统高 0.32σ。根因是 user-order time-split：valid/test 是每个 user 的时间后段，累计曝光自然更多 → log_impressions 偏高，与 OOF 无关。
+- 判别证据：同为 user 侧，`user_hist_ctr`（比率）无偏、`user_log_impressions`（计数）偏高，干净区分"时间累积"vs"OOF 编码"。
+
+重新定性：
+
+- PCOC 8–11% 高估**不是 OOF target encoding bug**，而是 time-split 下 count 特征的结构性偏移（叠加模型对其依赖）。
+- 仍是校准问题非排序问题（AUC/GAUC 不受影响），部署加 isotonic / Platt 校准头即可。
+- 边界："PCOC 完全由 user_log_impressions 解释"是强假设，要完全坐实需 reliability 图或对该特征消融（可选，非收口必需）。
+
 ### 状态
 
-Open（已知机制，Phase D 收口阶段不阻塞 commit；未来如继续做 stats 特征，必须先处理）
+Downgraded / 机制已查清（2026-05-31）：非 OOF 编码 bug，是 user-order time-split 的 count 特征结构性偏移。不阻塞收口。未来做 stats 特征**无需**特别处理 OOF；若需部署级概率校准，加校准头或对 count 特征做时间稳健处理即可。
