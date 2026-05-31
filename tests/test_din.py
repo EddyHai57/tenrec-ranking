@@ -122,6 +122,56 @@ class DinTest(unittest.TestCase):
         logits = model(self.features(), self.sequence(), numeric)
         self.assertEqual(tuple(logits.shape), (2,))
 
+    def _build_mode(self, hist_mode, numeric=None):
+        return build_model(
+            {
+                "name": "din",
+                "din": {
+                    "embedding_dim": 8,
+                    "attention_hidden_dims": [16, 8],
+                    "deep_hidden_dims": [32, 16],
+                    "dropout": 0.0,
+                    "output_bias_init": -1.0,
+                    "padding_index": 1,
+                    "hist_mode": hist_mode,
+                },
+            },
+            vocab_sizes=self.vocab_sizes,
+            feature_columns=self.feature_columns,
+            numeric_features=numeric,
+        )
+
+    def test_hist_mode_meanpool_forward_shape(self):
+        model = self._build_mode("meanpool")
+        logits = model(self.features(), self.sequence())
+        self.assertEqual(tuple(logits.shape), (2,))
+
+    def test_hist_mode_none_forward_shape(self):
+        model = self._build_mode("none")
+        logits = model(self.features(), self.sequence())
+        self.assertEqual(tuple(logits.shape), (2,))
+
+    def test_hist_mode_none_drops_user_interest_dim(self):
+        att = self._build_mode("attention")
+        non = self._build_mode("none")
+        # none 比 attention 的 deep 输入少一个 embedding (user_interest)
+        self.assertEqual(att.deep[0].in_features - non.deep[0].in_features, att.embedding_dim)
+
+    def test_meanpool_equals_manual_non_padding_mean(self):
+        model = self._build_mode("meanpool")
+        features = self.features()
+        sequence = self.sequence()
+        ui = model.user_interest_vector(features, sequence)
+        hist = sequence["hist_item"]
+        emb = model.hist_embedding(hist)
+        mask = hist.ne(1).to(emb.dtype).unsqueeze(-1)
+        manual = (emb * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+        self.assertTrue(torch.allclose(ui, manual, atol=1e-6))
+
+    def test_invalid_hist_mode_raises(self):
+        with self.assertRaises(ValueError):
+            self._build_mode("bogus")
+
 
 if __name__ == "__main__":
     unittest.main()
